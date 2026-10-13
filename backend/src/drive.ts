@@ -10,7 +10,7 @@
  * Google Drive is only how a file arrives — it is never recorded as the candidate's source.
  */
 import type { ResumeFile } from "../../frontend/src/types.ts";
-import { one, q } from "./db.ts";
+import { prisma } from "./db.ts";
 import * as google from "./google.ts";
 import { createCandidate } from "./pipeline.ts";
 import { getSetting, patchSetting } from "./settings.ts";
@@ -36,8 +36,8 @@ async function doSync() {
   if (!(await google.isConnected())) return { found: 0, imported: 0 };
   const rootId = await google.ensureRootFolder();
   const g = await getSetting("google");
-  const jobs = await q<{ id: string; title: string; drive_folder_id: string | null }>("select id, title, drive_folder_id from jobs");
-  const sources = await q<{ id: string; name: string }>("select id, name from sources");
+  const jobs = await prisma.jobs.findMany({ select: { id: true, title: true, drive_folder_id: true } });
+  const sources = await prisma.sources.findMany({ select: { id: true, name: true } });
   const sourceFor = (folderName: string) => sources.find((s) => norm(s.name) === norm(folderName) || s.id === norm(folderName))?.id ?? null;
 
   const folders: ScanFolder[] = [{ id: rootId, name: g.driveRootFolder, jobId: null, sourceId: null }];
@@ -46,7 +46,7 @@ async function doSync() {
     let job = jobs.find((j) => j.drive_folder_id === f.id) ?? jobs.find((j) => !j.drive_folder_id && norm(j.title) === norm(f.name));
     if (job && !job.drive_folder_id) {
       job.drive_folder_id = f.id;
-      await q("update jobs set drive_folder_id = $1, drive_folder = $2 where id = $3", [f.id, `${g.driveRootFolder}/${f.name}`, job.id]);
+      await prisma.jobs.updateMany({ where: { id: job.id }, data: { drive_folder_id: f.id, drive_folder: `${g.driveRootFolder}/${f.name}` } });
     }
     const path = `${g.driveRootFolder}/${f.name}`;
     folders.push({ id: f.id, name: path, jobId: job?.id ?? null, sourceId: job ? null : sourceFor(f.name) });
@@ -62,12 +62,20 @@ async function doSync() {
   for (const folder of folders) {
     const files = (await google.listFolder(folder.id)).filter((f) => google.RESUME_MIME.includes(f.mimeType));
     for (const f of files) {
-      const inserted = await one<{ drive_file_id: string }>(
-        `insert into drive_files (drive_file_id, file_name, mime_type, folder_id, folder_name, source_id, size_kb, modified_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict (drive_file_id) do nothing returning drive_file_id`,
-        [f.id, f.name, f.mimeType, folder.id, folder.name, folder.sourceId, Math.max(1, Math.round(Number(f.size ?? 0) / 1024)), f.modifiedTime ?? null],
-      );
-      if (inserted) {
+      const inserted = await prisma.drive_files.createMany({
+        data: {
+          drive_file_id: f.id,
+          file_name: f.name,
+          mime_type: f.mimeType,
+          folder_id: folder.id,
+          folder_name: folder.name,
+          source_id: folder.sourceId,
+          size_kb: Math.max(1, Math.round(Number(f.size ?? 0) / 1024)),
+          modified_at: f.modifiedTime ?? null,
+        },
+        skipDuplicates: true,
+      });
+      if (inserted.count) {
         found++;
         fresh.push({ id: f.id, jobId: folder.jobId });
       }
@@ -86,13 +94,13 @@ async function doSync() {
 /** Folder id → job id, for job folders and their source sub-folders. */
 async function jobForFolder(folderId: string | null): Promise<string | null> {
   if (!folderId) return null;
-  const direct = await one<{ id: string }>("select id from jobs where drive_folder_id = $1", [folderId]);
+  const direct = await prisma.jobs.findFirst({ where: { drive_folder_id: folderId }, select: { id: true } });
   if (direct) return direct.id;
   // Source sub-folder: its parent is the job folder.
   try {
     const meta = await google.getFileMeta(folderId);
     for (const parent of meta.parents ?? []) {
-      const job = await one<{ id: string }>("select id from jobs where drive_folder_id = $1", [parent]);
+      const job = await prisma.jobs.findFirst({ where: { drive_folder_id: parent }, select: { id: true } });
       if (job) return job.id;
     }
   } catch {
@@ -107,10 +115,7 @@ async function jobForFolder(folderId: string | null): Promise<string | null> {
  */
 export async function importDriveFiles(fileIds: string[], fallbackJobId: string | null, actorId: string | null, sourceId?: string | null): Promise<string[]> {
   if (!fileIds.length) return [];
-  const rows = await q<{ drive_file_id: string; file_name: string; mime_type: string; folder_id: string | null; source_id: string | null; size_kb: number; modified_at: string | null }>(
-    "select * from drive_files where drive_file_id = any($1::text[]) and status = 'inbox'",
-    [fileIds],
-  );
+  const rows = await prisma.drive_files.findMany({ where: { drive_file_id: { in: fileIds }, status: "inbox" } });
   const created: string[] = [];
   const folderJob = new Map<string, string | null>();
   for (const f of rows) {
@@ -123,12 +128,12 @@ export async function importDriveFiles(fileIds: string[], fallbackJobId: string 
       fileName: f.file_name,
       mimeType: f.mime_type,
       sizeKb: f.size_kb,
-      uploadedAt: f.modified_at ?? new Date().toISOString(),
+      uploadedAt: (f.modified_at ?? new Date()).toISOString(),
       uploadedById: actorId ?? "",
       driveUrl: `https://drive.google.com/file/d/${f.drive_file_id}/view`,
     };
     const id = await createCandidate({ resume, jobId, sourceId: sourceId || f.source_id, intake: "drive", actorId });
-    await q("update drive_files set status = 'imported', candidate_id = $2 where drive_file_id = $1", [f.drive_file_id, id]);
+    await prisma.drive_files.updateMany({ where: { drive_file_id: f.drive_file_id }, data: { status: "imported", candidate_id: id } });
     created.push(id);
   }
   return created;
@@ -137,8 +142,8 @@ export async function importDriveFiles(fileIds: string[], fallbackJobId: string 
 /** Creates a sub-folder for every active source inside each open job's Drive folder, so people know where to drop files. */
 export async function createSourceFolders(): Promise<{ jobs: number; folders: number }> {
   if (!(await google.isConnected())) return { jobs: 0, folders: 0 };
-  const jobs = await q<{ id: string }>("select id from jobs where status <> 'closed'");
-  const sources = await q<{ name: string }>("select name from sources where active order by position");
+  const jobs = await prisma.jobs.findMany({ where: { status: { not: "closed" } }, select: { id: true } });
+  const sources = await prisma.sources.findMany({ where: { active: true }, orderBy: { position: "asc" }, select: { name: true } });
   let folders = 0;
   for (const job of jobs) {
     const jobFolder = await ensureJobFolder(job.id);

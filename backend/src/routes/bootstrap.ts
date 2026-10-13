@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { can } from "../../../frontend/src/lib/permissions.ts";
-import { q } from "../db.ts";
+import { prisma } from "../db.ts";
 import { requireUser, type UserRow } from "../http.ts";
 
 // Rows are mapped field-by-field in serialize.ts.
@@ -16,43 +16,47 @@ export default async function bootstrapRoutes(app: FastifyInstance) {
     const org = await getSetting("org");
 
     const [team, stages, jobs, candidates, sources] = await Promise.all([
-      q<UserRow>("select * from users order by created_at"),
-      q<Row>("select * from stages order by position"),
-      q<Row>("select * from jobs order by created_at desc"),
-      all
-        ? q<Row>("select * from candidates order by applied_at desc")
-        : q<Row>("select c.* from candidates c where exists (select 1 from interviews i where i.candidate_id = c.id and $1 = any(i.interviewer_ids)) order by applied_at desc", [me.id]),
-      q<Row>("select * from sources order by position, lower(name)"),
+      prisma.users.findMany({ orderBy: { created_at: "asc" } }) as Promise<UserRow[]>,
+      prisma.stages.findMany({ orderBy: { position: "asc" } }),
+      prisma.jobs.findMany({ orderBy: { created_at: "desc" } }),
+      prisma.candidates.findMany({
+        where: all ? {} : { interviews: { some: { interviewer_ids: { has: me.id } } } },
+        orderBy: { applied_at: "desc" },
+      }),
+      prisma.sources
+        .findMany({ orderBy: { position: "asc" } })
+        .then((rows) => rows.sort((a, b) => a.position - b.position || a.name.toLowerCase().localeCompare(b.name.toLowerCase()))),
     ]);
-    const candidateIds = candidates.map((c) => c.id as string);
+    const candidateIds = candidates.map((c) => c.id);
 
     const [notes, interviews] = await Promise.all([
-      q<Row>("select * from notes where candidate_id = any($1::uuid[]) order by created_at desc", [candidateIds]),
-      all
-        ? q<Row>("select * from interviews where start_at > now() - interval '180 days' order by start_at")
-        : q<Row>("select * from interviews where $1 = any(interviewer_ids) order by start_at", [me.id]),
+      prisma.notes.findMany({ where: { candidate_id: { in: candidateIds } }, orderBy: { created_at: "desc" } }),
+      prisma.interviews.findMany({
+        where: all ? { start_at: { gt: new Date(Date.now() - 180 * 86400_000) } } : { interviewer_ids: { has: me.id } },
+        orderBy: { start_at: "asc" },
+      }),
     ]);
-    const feedback = await q<Row>("select * from interview_feedback where interview_id = any($1::uuid[]) order by created_at", [interviews.map((i) => i.id)]);
+    const feedback = await prisma.interview_feedback.findMany({ where: { interview_id: { in: interviews.map((i) => i.id) } }, orderBy: { created_at: "asc" } });
 
     const canEmail = can(me.role, "emails.sendSingle");
     const [bookingLinks, templates, campaigns, activity, driveInbox] = await Promise.all([
-      all ? q<Row>("select * from booking_links order by created_at") : Promise.resolve([]),
-      canEmail ? q<Row>("select * from email_templates order by name") : Promise.resolve([]),
+      all ? prisma.booking_links.findMany({ orderBy: { created_at: "asc" } }) : Promise.resolve([]),
+      canEmail ? prisma.email_templates.findMany({ orderBy: { name: "asc" } }) : Promise.resolve([]),
       canEmail
-        ? q<Row>(`select c.*,
+        ? prisma.$queryRaw<Row[]>`select c.*,
                array_agg(m.candidate_id) as recipient_ids,
                count(*) filter (where m.status = 'sent')::int as delivered,
                count(m.opened_at)::int as opened,
                count(m.clicked_at)::int as clicked,
                count(*) filter (where m.status = 'failed')::int as failed
              from email_campaigns c left join email_messages m on m.campaign_id = c.id
-             group by c.id order by c.send_at desc limit 150`)
+             group by c.id order by c.send_at desc limit 150`
         : Promise.resolve([]),
       all
-        ? q<Row>("select * from activity order by created_at desc limit 300")
-        : q<Row>("select * from activity where candidate_id = any($1::uuid[]) order by created_at desc limit 100", [candidateIds]),
+        ? prisma.activity.findMany({ orderBy: { created_at: "desc" }, take: 300 })
+        : prisma.activity.findMany({ where: { candidate_id: { in: candidateIds } }, orderBy: { created_at: "desc" }, take: 100 }),
       can(me.role, "resumes.upload")
-        ? q<Row>("select * from drive_files where status = 'inbox' order by modified_at desc nulls last limit 200")
+        ? prisma.drive_files.findMany({ where: { status: "inbox" }, orderBy: { modified_at: { sort: "desc", nulls: "last" } }, take: 200 })
         : Promise.resolve([]),
     ]);
 

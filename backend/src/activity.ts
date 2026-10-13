@@ -1,4 +1,4 @@
-import { q } from "./db.ts";
+import { prisma } from "./db.ts";
 
 export type ActivityType =
   | "stage_change"
@@ -13,5 +13,5 @@ export type ActivityType =
   | "source_changed";
 
 export async function logActivity(actorId: string | null, type: ActivityType, message: string, candidateId?: string | null) {
-  await q("insert into activity (actor_id, type, message, candidate_id) values ($1, $2, $3, $4)", [actorId, type, message, candidateId ?? null]);
+  await prisma.activity.create({ data: { actor_id: actorId, type, message, candidate_id: candidateId ?? null } });
 }

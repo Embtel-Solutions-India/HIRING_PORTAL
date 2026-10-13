@@ -6,7 +6,7 @@ import { canManageRole, ROLE_LABEL } from "../../../frontend/src/lib/permissions
 import type { Role } from "../../../frontend/src/types.ts";
 import { logActivity } from "../activity.ts";
 import { config } from "../config.ts";
-import { one, q, tx } from "../db.ts";
+import { prisma } from "../db.ts";
 import { createCampaign, sendSystemEmail } from "../email.ts";
 import { HttpError, isUuid, requirePerm, type UserRow } from "../http.ts";
 import { ensureJobFolder } from "../storage.ts";
@@ -45,17 +45,14 @@ export default async function adminRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     if (!/^[\w-]{1,64}$/.test(id)) throw new HttpError(400, "Bad id");
     const t = Template.parse(req.body);
-    await q(
-      `insert into email_templates (id, name, subject, body, category, updated_at) values ($1, $2, $3, $4, $5, now())
-       on conflict (id) do update set name = excluded.name, subject = excluded.subject, body = excluded.body, category = excluded.category, updated_at = now()`,
-      [id, t.name, t.subject, t.body, t.category],
-    );
+    const data = { name: t.name, subject: t.subject, body: t.body, category: t.category, updated_at: new Date() };
+    await prisma.email_templates.upsert({ where: { id }, create: { id, ...data }, update: data });
     return { ok: true };
   });
 
   app.delete("/api/email-templates/:id", async (req) => {
     requirePerm(req, "emails.manageTemplates");
-    await q("delete from email_templates where id = $1", [(req.params as { id: string }).id]);
+    await prisma.email_templates.deleteMany({ where: { id: (req.params as { id: string }).id } });
     return { ok: true };
   });
 
@@ -76,19 +73,14 @@ export default async function adminRoutes(app: FastifyInstance) {
     const user = requirePerm(req, "jobs.manage");
     const { id } = req.params as { id: string };
     const j = Job.parse(req.body);
-    const existing = isUuid(id) ? await one<{ title: string }>("select title from jobs where id = $1", [id]) : undefined;
+    const existing = isUuid(id) ? await prisma.jobs.findUnique({ where: { id }, select: { title: true } }) : null;
     let jobId = id;
+    const data = { title: j.title, department: j.department, location: j.location, type: j.type, status: j.status, hiring_manager_id: j.hiringManagerId || null, openings: j.openings };
     if (existing) {
-      await q(
-        "update jobs set title=$2, department=$3, location=$4, type=$5, status=$6, hiring_manager_id=$7, openings=$8, description=coalesce($9, description) where id=$1",
-        [id, j.title, j.department, j.location, j.type, j.status, j.hiringManagerId || null, j.openings, j.description ?? null],
-      );
+      await prisma.jobs.updateMany({ where: { id }, data: { ...data, description: j.description } });
     } else {
-      const row = await one<{ id: string }>(
-        "insert into jobs (title, department, location, type, status, hiring_manager_id, openings, description) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id",
-        [j.title, j.department, j.location, j.type, j.status, j.hiringManagerId || null, j.openings, j.description ?? ""],
-      );
-      jobId = row!.id;
+      const row = await prisma.jobs.create({ data: { ...data, description: j.description ?? "" }, select: { id: true } });
+      jobId = row.id;
       await logActivity(user.id, "settings_changed", `created job ${j.title}`);
     }
     try {
@@ -106,19 +98,15 @@ export default async function adminRoutes(app: FastifyInstance) {
     const body = z.object({ name: z.string().trim().min(1).max(120), email: z.string().trim().toLowerCase().email(), role: RoleEnum, title: z.string().max(120).default("") }).parse(req.body);
     if (!canManageRole(actor.role, body.role)) throw new HttpError(403, `You can't invite ${ROLE_LABEL[body.role]}s`);
     if (config.allowedEmailDomain && !body.email.endsWith(`@${config.allowedEmailDomain}`)) throw new HttpError(400, `Only @${config.allowedEmailDomain} accounts can sign in`);
-    const existing = await one<UserRow>("select * from users where email = $1", [body.email]);
+    const existing = await prisma.users.findUnique({ where: { email: body.email } });
     if (existing && existing.status !== "deactivated") throw new HttpError(409, "That person is already on the team");
-    const count = await one<{ n: number }>("select count(*)::int as n from users");
+    const count = await prisma.users.count();
     if (existing) {
-      await q("update users set name=$2, title=$3, role=$4, status='invited' where id=$1", [existing.id, body.name, body.title, body.role]);
+      await prisma.users.updateMany({ where: { id: existing.id }, data: { name: body.name, title: body.title, role: body.role, status: "invited" } });
     } else {
-      await q("insert into users (email, name, title, role, status, avatar_color) values ($1,$2,$3,$4,'invited',$5)", [
-        body.email,
-        body.name,
-        body.title,
-        body.role,
-        AVATAR_COLORS[(count?.n ?? 0) % AVATAR_COLORS.length],
-      ]);
+      await prisma.users.create({
+        data: { email: body.email, name: body.name, title: body.title, role: body.role, status: "invited", avatar_color: AVATAR_COLORS[count % AVATAR_COLORS.length]! },
+      });
     }
     await logActivity(actor.id, "user_invited", `invited ${body.email} as ${ROLE_LABEL[body.role]}`);
     await sendInvite(body.email, body.name, actor.name, body.role).catch((e) => console.warn("[invite] email failed:", e));
@@ -136,7 +124,8 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.post("/api/users/:id/resend-invite", async (req) => {
     const actor = requirePerm(req, "users.manage");
-    const u = await one<UserRow>("select * from users where id = $1", [(req.params as { id: string }).id]);
+    const { id } = req.params as { id: string };
+    const u = isUuid(id) ? ((await prisma.users.findUnique({ where: { id } })) as UserRow | null) : null;
     if (!u || u.status !== "invited") throw new HttpError(404, "No pending invite");
     if (!canManageRole(actor.role, u.role)) throw new HttpError(403, "Not allowed");
     await sendInvite(u.email, u.name, actor.name, u.role);
@@ -147,22 +136,22 @@ export default async function adminRoutes(app: FastifyInstance) {
     const actor = requirePerm(req, "users.manage");
     const { id } = req.params as { id: string };
     const body = z.object({ role: RoleEnum, status: z.enum(["active", "deactivated"]), title: z.string().max(120), name: z.string().trim().min(1).max(120) }).partial().parse(req.body);
-    const target = isUuid(id) ? await one<UserRow>("select * from users where id = $1", [id]) : undefined;
+    const target = isUuid(id) ? ((await prisma.users.findUnique({ where: { id } })) as UserRow | null) : null;
     if (!target) throw new HttpError(404, "Not found");
     if (target.id === actor.id && (body.role || body.status)) throw new HttpError(400, "You can't change your own role or status");
     if (!canManageRole(actor.role, target.role) || (body.role && !canManageRole(actor.role, body.role))) throw new HttpError(403, "Not allowed");
     if (target.role === "super_admin" && (body.role && body.role !== "super_admin" || body.status === "deactivated")) {
-      const supers = await one<{ n: number }>("select count(*)::int as n from users where role = 'super_admin' and status = 'active'");
-      if ((supers?.n ?? 0) <= 1) throw new HttpError(400, "There must always be at least one Super Admin");
+      const supers = await prisma.users.count({ where: { role: "super_admin", status: "active" } });
+      if (supers <= 1) throw new HttpError(400, "There must always be at least one Super Admin");
     }
     if (target.email === config.superAdminEmail && (body.role && body.role !== "super_admin" || body.status === "deactivated")) {
       throw new HttpError(400, "This is the account set in SUPER_ADMIN_EMAIL — change that setting first");
     }
-    await q(
-      "update users set role = coalesce($2, role), status = coalesce($3, status), title = coalesce($4, title), name = coalesce($5, name) where id = $1",
-      [id, body.role ?? null, body.status === "active" && target.status === "invited" ? "invited" : (body.status ?? null), body.title ?? null, body.name ?? null],
-    );
-    if (body.status === "deactivated") await q("delete from sessions where user_id = $1", [id]);
+    await prisma.users.updateMany({
+      where: { id },
+      data: { role: body.role, status: body.status === "active" && target.status === "invited" ? "invited" : body.status, title: body.title, name: body.name },
+    });
+    if (body.status === "deactivated") await prisma.sessions.deleteMany({ where: { user_id: id } });
     if (body.role && body.role !== target.role) await logActivity(actor.id, "role_changed", `changed ${target.name}'s role to ${ROLE_LABEL[body.role]}`);
     if (body.status && body.status !== target.status) await logActivity(actor.id, "settings_changed", `${body.status === "deactivated" ? "deactivated" : "reactivated"} ${target.name}`);
     return { ok: true };
@@ -188,24 +177,33 @@ export default async function adminRoutes(app: FastifyInstance) {
       })
       .parse(req.body);
     if (b.endHour <= b.startHour) throw new HttpError(400, "End time must be after start time");
-    const clash = await one("select 1 from booking_links where slug = $1 and id::text <> $2", [b.slug, id]);
+    const clash = await prisma.booking_links.findFirst({ where: { slug: b.slug, ...(isUuid(id) ? { NOT: { id } } : {}) }, select: { id: true } });
     if (clash) throw new HttpError(409, "That URL is already used by another link");
-    const exists = isUuid(id) && (await one("select 1 from booking_links where id = $1", [id]));
-    const params = [b.slug, b.title, b.durationMin, b.type, b.hostIds, b.days, b.startHour, b.endHour, b.bufferMin, b.active];
+    const exists = isUuid(id) && (await prisma.booking_links.findUnique({ where: { id }, select: { id: true } }));
+    const data = {
+      slug: b.slug,
+      title: b.title,
+      duration_min: b.durationMin,
+      type: b.type,
+      host_ids: b.hostIds,
+      days: b.days,
+      start_hour: b.startHour,
+      end_hour: b.endHour,
+      buffer_min: b.bufferMin,
+      active: b.active,
+    };
     if (exists) {
-      await q("update booking_links set slug=$2, title=$3, duration_min=$4, type=$5, host_ids=$6, days=$7, start_hour=$8, end_hour=$9, buffer_min=$10, active=$11 where id=$1", [id, ...params]);
+      await prisma.booking_links.updateMany({ where: { id }, data });
       return { id };
     }
-    const row = await one<{ id: string }>(
-      "insert into booking_links (slug, title, duration_min, type, host_ids, days, start_hour, end_hour, buffer_min, active) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id",
-      params,
-    );
-    return { id: row!.id };
+    const row = await prisma.booking_links.create({ data, select: { id: true } });
+    return { id: row.id };
   });
 
   app.delete("/api/booking-links/:id", async (req) => {
     requirePerm(req, "interviews.manageBookingLinks");
-    await q("delete from booking_links where id::text = $1", [(req.params as { id: string }).id]);
+    const { id } = req.params as { id: string };
+    if (isUuid(id)) await prisma.booking_links.deleteMany({ where: { id } });
     return { ok: true };
   });
 
@@ -232,7 +230,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       const current = await getSetting("google");
       const folderChanged = google.driveRootFolder && google.driveRootFolder !== current.driveRootFolder;
       await patchSetting("google", { ...google, ...(folderChanged ? { driveRootFolderId: undefined } : {}) });
-      if (folderChanged) await q("update jobs set drive_folder_id = null");
+      if (folderChanged) await prisma.jobs.updateMany({ data: { drive_folder_id: null } });
     }
     await logActivity(user.id, "settings_changed", `updated ${Object.keys(body).join(", ")} settings`);
     return { ok: true };
@@ -245,19 +243,19 @@ export default async function adminRoutes(app: FastifyInstance) {
       .min(2)
       .parse(req.body);
     if (!stages.some((s) => s.kind === "active")) throw new HttpError(400, "Keep at least one in-progress stage");
-    await tx(async (c) => {
-      const keep = stages.map((s) => s.id);
-      const used = await c.query("select distinct stage_id from candidates where not (stage_id = any($1::text[]))", [keep]);
-      if (used.rowCount) throw new HttpError(400, "Move candidates out of a stage before deleting it");
-      await c.query("delete from stages where not (id = any($1::text[]))", [keep]);
-      for (const [i, s] of stages.entries()) {
-        await c.query(
-          `insert into stages (id, name, color, kind, position, auto_email_template_id) values ($1,$2,$3,$4,$5,$6)
-           on conflict (id) do update set name=excluded.name, color=excluded.color, kind=excluded.kind, position=excluded.position, auto_email_template_id=excluded.auto_email_template_id`,
-          [s.id, s.name, s.color, s.kind, i, s.autoEmailTemplateId || null],
-        );
-      }
-    });
+    await prisma.$transaction(
+      async (tx) => {
+        const keep = stages.map((s) => s.id);
+        const used = await tx.candidates.findFirst({ where: { stage_id: { notIn: keep } }, select: { id: true } });
+        if (used) throw new HttpError(400, "Move candidates out of a stage before deleting it");
+        await tx.stages.deleteMany({ where: { id: { notIn: keep } } });
+        for (const [i, s] of stages.entries()) {
+          const data = { name: s.name, color: s.color, kind: s.kind, position: i, auto_email_template_id: s.autoEmailTemplateId || null };
+          await tx.stages.upsert({ where: { id: s.id }, create: { id: s.id, ...data }, update: data });
+        }
+      },
+      { timeout: 30_000 }, // one round trip per stage; the 5s default is tight over a remote pooler
+    );
     await logActivity(user.id, "settings_changed", "updated pipeline stages");
     return { ok: true };
   });

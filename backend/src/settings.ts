@@ -1,5 +1,5 @@
 import { config } from "./config.ts";
-import { one, q } from "./db.ts";
+import { Prisma, prisma } from "./db.ts";
 
 export interface OrgSettingsRow {
   orgName: string;
@@ -61,14 +61,16 @@ type Key = keyof typeof DEFAULTS;
 type ValueOf<K extends Key> = ReturnType<(typeof DEFAULTS)[K]>;
 
 export async function getSetting<K extends Key>(key: K): Promise<ValueOf<K>> {
-  const row = await one<{ value: unknown }>("select value from settings where key = $1", [key]);
+  const row = await prisma.settings.findUnique({ where: { key } });
   const base = DEFAULTS[key]() as ValueOf<K>;
   if (!row) return base;
   return Array.isArray(base) ? (row.value as ValueOf<K>) : ({ ...base, ...(row.value as object) } as ValueOf<K>);
 }
 
 export async function setSetting<K extends Key>(key: K, value: ValueOf<K>) {
-  await q("insert into settings (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", [key, JSON.stringify(value)]);
+  // Round-trip through JSON so undefined fields are dropped, exactly as they are when stored.
+  const json = JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  await prisma.settings.upsert({ where: { key }, create: { key, value: json }, update: { value: json } });
 }
 
 export async function patchSetting<K extends Key>(key: K, patch: Partial<ValueOf<K>>) {

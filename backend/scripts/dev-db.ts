@@ -1,9 +1,10 @@
 // Local Postgres for development without Docker: `npm run dev:db` (keeps running; Ctrl+C to stop).
 import EmbeddedPostgres from "embedded-postgres";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const dir = new URL("../.dev-db", import.meta.url).pathname;
-const pg = new EmbeddedPostgres({ databaseDir: dir, user: "postgres", password: "postgres", port: 5433, persistent: true });
+const dir = fileURLToPath(new URL("../.dev-db", import.meta.url));
+const pg = new EmbeddedPostgres({ databaseDir: dir, user: "postgres", password: "postgres", port: 5433, persistent: true, postgresFlags: ["-c", "timezone=UTC"] }); // Prisma needs UTC sessions (see db.ts)
 
 if (!fs.existsSync(dir)) await pg.initialise();
 await pg.start();

@@ -43,6 +43,14 @@ cd frontend && npm run dev
 
 Open http://localhost:5173 and use the **Development sign-in** box with `admin@example.com`, or `priya@example.com` after loading the demo data. Local settings are in `backend/.env`. Emails are printed in terminal 2 instead of being sent.
 
+### Database (Prisma)
+
+The backend talks to Postgres through [Prisma ORM](https://www.prisma.io/). The schema lives in `backend/prisma/schema.prisma` and the SQL migrations in `backend/prisma/migrations/`; the server applies pending migrations every time it starts. `npm install` generates the client into `backend/src/generated/` (re-run `npx prisma generate` after editing the schema).
+
+To change the schema: edit `schema.prisma`, run `npx prisma migrate dev --create-only --name <what-changed>` in `backend/`, review the generated SQL, then restart the server. The database must use the UTC time zone (Supabase and the Docker image already do).
+
+To use a hosted database such as Supabase, set `DATABASE_URL` (the app's connection, e.g. the transaction pooler) and `DIRECT_URL` (used for migrations, e.g. the session pooler) in `backend/.env` or `.env`.
+
 Type-check both projects:
 
 ```bash

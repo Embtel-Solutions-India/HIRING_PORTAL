@@ -13,7 +13,11 @@ ENV NODE_ENV=production \
     DATA_DIR=/data \
     PORT=3000
 WORKDIR /app/backend
-COPY backend/package.json backend/package-lock.json ./
+# Prisma's migration engine (run on startup) needs OpenSSL.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+COPY backend/package.json backend/package-lock.json backend/prisma.config.ts ./
+COPY backend/prisma ./prisma
+# postinstall runs `prisma generate` into src/generated
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY backend/src ./src
 # The permission matrix (and its types) are shared with the frontend.

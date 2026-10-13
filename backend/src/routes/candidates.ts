@@ -3,7 +3,7 @@ import { z } from "zod";
 import { can } from "../../../frontend/src/lib/permissions.ts";
 import type { ResumeFile } from "../../../frontend/src/types.ts";
 import { logActivity } from "../activity.ts";
-import { one, q } from "../db.ts";
+import { prisma } from "../db.ts";
 import { createCampaign } from "../email.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
 import { createCandidate, enqueueParse } from "../pipeline.ts";
@@ -32,16 +32,17 @@ export default async function candidateRoutes(app: FastifyInstance) {
   app.post("/api/candidates/move", async (req) => {
     const user = requirePerm(req, "candidates.moveStage");
     const body = MoveBody.parse(req.body);
-    const stage = await one<{ id: string; name: string; auto_email_template_id: string | null }>("select * from stages where id = $1", [body.stageId]);
+    const stage = await prisma.stages.findUnique({ where: { id: body.stageId } });
     if (!stage) throw new HttpError(400, "Unknown stage");
-    const moved = await q<{ id: string; first_name: string; last_name: string }>(
-      "update candidates set stage_id = $1, stage_entered_at = now() where id = any($2::uuid[]) and stage_id <> $1 returning id, first_name, last_name",
-      [stage.id, body.ids],
-    );
+    const moved = await prisma.candidates.updateManyAndReturn({
+      where: { id: { in: body.ids }, stage_id: { not: stage.id } },
+      data: { stage_id: stage.id, stage_entered_at: new Date() },
+      select: { id: true, first_name: true, last_name: true },
+    });
     for (const c of moved) await logActivity(user.id, "stage_change", `moved ${fullName(c)} to ${stage.name}`, c.id);
     let emailed = 0;
     if (body.notify && stage.auto_email_template_id && moved.length && can(user.role, moved.length > 1 ? "emails.sendBulk" : "emails.sendSingle")) {
-      const t = await one<{ id: string; subject: string; body: string }>("select * from email_templates where id = $1", [stage.auto_email_template_id]);
+      const t = await prisma.email_templates.findUnique({ where: { id: stage.auto_email_template_id } });
       if (t) {
         await createCampaign({ recipientIds: moved.map((m) => m.id), subject: t.subject, body: t.body, templateId: t.id, actorId: user.id });
         emailed = moved.length;
@@ -57,11 +58,20 @@ export default async function candidateRoutes(app: FastifyInstance) {
     const profileKeys = ["ownerId", "jobId", "firstName", "lastName", "email", "phone", "location", "tags"] as const;
     const user = profileKeys.some((k) => k in body) ? requirePerm(req, "candidates.edit") : requirePerm(req, "candidates.addNote");
     await assertCandidateAccess(user, id);
-    const cols: Record<string, string> = { rating: "rating", starred: "starred", tags: "tags", ownerId: "owner_id", jobId: "job_id", firstName: "first_name", lastName: "last_name", email: "email", phone: "phone", location: "location" };
-    const entries = Object.entries(body).filter(([k]) => k in cols);
-    if (!entries.length) return { ok: true };
-    const sets = entries.map(([k], i) => `${cols[k]} = $${i + 2}`).join(", ");
-    await q(`update candidates set ${sets} where id = $1`, [id, ...entries.map(([, v]) => v)]);
+    const data = {
+      rating: body.rating,
+      starred: body.starred,
+      tags: body.tags,
+      owner_id: body.ownerId,
+      job_id: body.jobId,
+      first_name: body.firstName,
+      last_name: body.lastName,
+      email: body.email,
+      phone: body.phone,
+      location: body.location,
+    };
+    if (Object.values(data).every((v) => v === undefined)) return { ok: true };
+    await prisma.candidates.updateMany({ where: { id }, data });
     return { ok: true };
   });
 
@@ -71,8 +81,8 @@ export default async function candidateRoutes(app: FastifyInstance) {
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     await assertCandidateAccess(user, id);
     const { body } = z.object({ body: z.string().trim().min(1).max(5000) }).parse(req.body);
-    const c = await one<{ first_name: string; last_name: string }>("select first_name, last_name from candidates where id = $1", [id]);
-    await q("insert into notes (candidate_id, author_id, body) values ($1, $2, $3)", [id, user.id, body]);
+    const c = await prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } });
+    await prisma.notes.create({ data: { candidate_id: id, author_id: user.id, body } });
     await logActivity(user.id, "note", `added a note on ${fullName(c!)}`, id);
     return { ok: true };
   });
@@ -80,16 +90,16 @@ export default async function candidateRoutes(app: FastifyInstance) {
   app.post("/api/candidates/delete", async (req) => {
     const user = requirePerm(req, "candidates.delete");
     const { ids } = z.object({ ids: z.array(z.string().uuid()).min(1) }).parse(req.body);
-    const rows = await q<{ id: string }>("delete from candidates where id = any($1::uuid[]) returning id", [ids]);
-    await logActivity(user.id, "settings_changed", `deleted ${rows.length} candidate${rows.length === 1 ? "" : "s"} (resumes kept in Drive)`);
-    return { deleted: rows.length };
+    const { count } = await prisma.candidates.deleteMany({ where: { id: { in: ids } } });
+    await logActivity(user.id, "settings_changed", `deleted ${count} candidate${count === 1 ? "" : "s"} (resumes kept in Drive)`);
+    return { deleted: count };
   });
 
   app.post("/api/candidates/:id/resummarize", async (req) => {
     requirePerm(req, "candidates.edit");
     const { id } = req.params as { id: string };
     if (!isUuid(id)) throw new HttpError(404, "Not found");
-    await q("update candidates set parse_status = 'pending' where id = $1", [id]);
+    await prisma.candidates.updateMany({ where: { id }, data: { parse_status: "pending" } });
     enqueueParse(id);
     return { ok: true };
   });
@@ -99,9 +109,10 @@ export default async function candidateRoutes(app: FastifyInstance) {
   async function loadResume(reqUser: Parameters<typeof assertCandidateAccess>[0], id: string) {
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     await assertCandidateAccess(reqUser, id);
-    const c = await one<{ resume: ResumeFile | null }>("select resume from candidates where id = $1", [id]);
-    if (!c?.resume?.driveFileId) throw new HttpError(404, "No resume on file");
-    return c.resume;
+    const c = await prisma.candidates.findUnique({ where: { id }, select: { resume: true } });
+    const resume = c?.resume as ResumeFile | null | undefined;
+    if (!resume?.driveFileId) throw new HttpError(404, "No resume on file");
+    return resume;
   }
 
   app.get("/api/candidates/:id/resume/preview", async (req, reply) => {
@@ -145,7 +156,7 @@ export default async function candidateRoutes(app: FastifyInstance) {
         continue;
       }
       if (part.type === "field" && part.fieldname === "sourceId") {
-        source = part.value ? await one<{ id: string; name: string }>("select id, name from sources where id = $1", [part.value]) : undefined;
+        source = part.value ? ((await prisma.sources.findUnique({ where: { id: String(part.value) }, select: { id: true, name: true } })) ?? undefined) : undefined;
         continue;
       }
       if (part.type !== "file") continue;

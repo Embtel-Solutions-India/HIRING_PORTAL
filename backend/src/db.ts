@@ -1,53 +1,29 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import pg from "pg";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { config } from "./config.ts";
+import { PrismaClient } from "./generated/prisma/client.ts";
 
-// Return timestamps as ISO strings (what the frontend expects) instead of Date objects.
-pg.types.setTypeParser(1184, (v) => new Date(v).toISOString()); // timestamptz
-pg.types.setTypeParser(20, (v) => Number(v)); // int8 (count(*))
+export { Prisma } from "./generated/prisma/client.ts";
 
-export const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 10 });
+// DATABASE_URL may point at a transaction-mode pooler (e.g. Supabase :6543); node-postgres works there as-is.
+export const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: config.databaseUrl, max: 10 }) });
 
-export async function q<T = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T[]> {
-  const res = await pool.query(text, params);
-  return res.rows as T[];
-}
-
-export async function one<T = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T | undefined> {
-  const rows = await q<T>(text, params);
-  return rows[0];
-}
-
-export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const result = await fn(client);
-    await client.query("commit");
-    return result;
-  } catch (e) {
-    await client.query("rollback");
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-/** Applies every .sql file in src/migrations once, in filename order. */
+/** Applies pending migrations in prisma/migrations (via DIRECT_URL, see prisma.config.ts). */
 export async function migrate() {
-  const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "migrations");
-  await pool.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
-  const done = new Set((await q<{ name: string }>("select name from schema_migrations")).map((r) => r.name));
-  const files = (await fs.readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-  for (const file of files) {
-    if (done.has(file)) continue;
-    const sql = await fs.readFile(path.join(dir, file), "utf8");
-    await tx(async (c) => {
-      await c.query(sql);
-      await c.query("insert into schema_migrations (name) values ($1)", [file]);
-    });
-    console.log(`[db] applied migration ${file}`);
+  // @prisma/adapter-pg reads timestamptz values as UTC no matter the session time zone, so a non-UTC server
+  // would silently shift every date. Supabase and the postgres Docker image default to UTC.
+  const [tz] = await prisma.$queryRaw<{ name: string; utc: boolean }[]>`select current_setting('TimeZone') as name, extract(timezone from now()) = 0 as utc`;
+  if (!tz?.utc) throw new Error(`Postgres time zone is "${tz?.name}"; set it to UTC (e.g. ALTER DATABASE <db> SET timezone TO 'UTC')`);
+
+  const prismaCli = (...args: string[]) =>
+    execFileSync(process.execPath, [createRequire(import.meta.url).resolve("prisma/build/index.js"), ...args], { stdio: "inherit" });
+  // Databases created by the old built-in runner: mark the migrations it already applied, once.
+  const [state] = await prisma.$queryRaw<{ legacy: boolean; prisma: boolean }[]>`
+    select to_regclass('public.schema_migrations') is not null as legacy, to_regclass('public._prisma_migrations') is not null as prisma`;
+  if (state?.legacy && !state.prisma) {
+    const done = await prisma.$queryRaw<{ name: string }[]>`select name from schema_migrations order by name`;
+    for (const { name } of done) prismaCli("migrate", "resolve", "--applied", name.replace(/\.sql$/, ""));
   }
+  prismaCli("migrate", "deploy");
 }

@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Role } from "../../frontend/src/types.ts";
 import { can, type Permission } from "../../frontend/src/lib/permissions.ts";
 import { config } from "./config.ts";
-import { one, q } from "./db.ts";
+import { prisma } from "./db.ts";
 import { randomToken, sha256 } from "./crypto.ts";
 
 export interface UserRow {
@@ -13,7 +13,8 @@ export interface UserRow {
   role: Role;
   status: "active" | "invited" | "deactivated";
   avatar_color: string;
-  last_active_at: string | null;
+  last_active_at: Date | null;
+  created_at: Date;
 }
 
 declare module "fastify" {
@@ -36,7 +37,7 @@ const SESSION_DAYS = 30;
 export async function createSession(reply: FastifyReply, userId: string) {
   const token = randomToken();
   const expires = new Date(Date.now() + SESSION_DAYS * 86400_000);
-  await q("insert into sessions (id, user_id, expires_at) values ($1, $2, $3)", [sha256(token), userId, expires]);
+  await prisma.sessions.create({ data: { id: sha256(token), user_id: userId, expires_at: expires } });
   reply.setCookie(SESSION_COOKIE, token, {
     path: "/",
     httpOnly: true,
@@ -48,7 +49,7 @@ export async function createSession(reply: FastifyReply, userId: string) {
 
 export async function destroySession(req: FastifyRequest, reply: FastifyReply) {
   const token = req.cookies[SESSION_COOKIE];
-  if (token) await q("delete from sessions where id = $1", [sha256(token)]);
+  if (token) await prisma.sessions.deleteMany({ where: { id: sha256(token) } });
   reply.clearCookie(SESSION_COOKIE, { path: "/" });
 }
 
@@ -56,16 +57,16 @@ export async function destroySession(req: FastifyRequest, reply: FastifyReply) {
 export async function loadUser(req: FastifyRequest) {
   const token = req.cookies[SESSION_COOKIE];
   if (!token) return;
-  const user = await one<UserRow>(
-    `select u.* from sessions s join users u on u.id = s.user_id
-     where s.id = $1 and s.expires_at > now() and u.status = 'active'`,
-    [sha256(token)],
-  );
-  if (!user) return;
+  const session = await prisma.sessions.findFirst({
+    where: { id: sha256(token), expires_at: { gt: new Date() }, users: { status: "active" } },
+    select: { users: true },
+  });
+  if (!session) return;
+  const user = session.users as UserRow;
   req.user = user;
   // Cheap "last active" tracking: at most once every 5 minutes.
   if (!user.last_active_at || Date.now() - new Date(user.last_active_at).getTime() > 300_000) {
-    q("update users set last_active_at = now() where id = $1", [user.id]).catch(() => {});
+    prisma.users.updateMany({ where: { id: user.id }, data: { last_active_at: new Date() } }).catch(() => {});
   }
 }
 
@@ -83,12 +84,12 @@ export function requirePerm(req: FastifyRequest, permission: Permission): UserRo
 /** Interviewers only see candidates they're scheduled to interview. */
 export async function assertCandidateAccess(user: UserRow, candidateId: string) {
   if (can(user.role, "candidates.viewAll")) {
-    const exists = await one("select 1 from candidates where id = $1", [candidateId]);
+    const exists = await prisma.candidates.findUnique({ where: { id: candidateId }, select: { id: true } });
     if (!exists) throw new HttpError(404, "Candidate not found");
     return;
   }
-  const ok = await one("select 1 from interviews where candidate_id = $1 and $2 = any(interviewer_ids) limit 1", [candidateId, user.id]);
+  const ok = await prisma.interviews.findFirst({ where: { candidate_id: candidateId, interviewer_ids: { has: user.id } }, select: { id: true } });
   if (!ok) throw new HttpError(404, "Candidate not found");
 }
 
-export const isUuid = (s: unknown): s is string => typeof s === "string" && /^[0-9a-f-]{36}$/i.test(s);
+export const isUuid = (s: unknown): s is string => typeof s === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);

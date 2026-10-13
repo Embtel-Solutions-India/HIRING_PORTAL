@@ -6,7 +6,7 @@ import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { ZodError } from "zod";
 import { assertConfig, config } from "./config.ts";
-import { migrate, pool } from "./db.ts";
+import { migrate, prisma } from "./db.ts";
 import { syncDrive } from "./drive.ts";
 import { sendDueCampaigns } from "./email.ts";
 import { HttpError, loadUser } from "./http.ts";
@@ -50,7 +50,7 @@ app.setErrorHandler((err, req, reply) => {
 });
 
 app.get("/api/health", async () => {
-  await pool.query("select 1");
+  await prisma.$queryRaw`select 1`;
   return { ok: true };
 });
 
@@ -82,7 +82,7 @@ const every = (ms: number, label: string, fn: () => Promise<unknown>) =>
 
 every(60_000, "email", sendDueCampaigns);
 every(config.driveSyncMinutes * 60_000, "drive", syncDrive);
-every(3600_000, "sessions", () => pool.query("delete from sessions where expires_at < now()"));
+every(3600_000, "sessions", () => prisma.sessions.deleteMany({ where: { expires_at: { lt: new Date() } } }));
 resumePendingParses().catch((e) => console.error("[parse] resume failed", e));
 
 await app.listen({ port: config.port, host: "0.0.0.0" });
@@ -91,7 +91,7 @@ console.log(`Hirely API listening on :${config.port} — ${config.appUrl}`);
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
     await app.close();
-    await pool.end();
+    await prisma.$disconnect();
     process.exit(0);
   });
 }

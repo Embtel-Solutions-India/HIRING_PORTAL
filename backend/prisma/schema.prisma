@@ -1,0 +1,273 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = "ts"
+  moduleFormat        = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model activity {
+  id           String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actor_id     String?     @db.Uuid
+  type         String
+  candidate_id String?     @db.Uuid
+  message      String
+  created_at   DateTime    @default(now()) @db.Timestamptz(6)
+  users        users?      @relation(fields: [actor_id], references: [id], onUpdate: NoAction)
+  candidates   candidates? @relation(fields: [candidate_id], references: [id], onUpdate: NoAction)
+
+  @@index([created_at(sort: Desc)], map: "activity_created_idx")
+}
+
+model booking_links {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug         String       @unique
+  title        String
+  duration_min Int          @default(30)
+  type         String       @default("video")
+  host_ids     String[]     @default([]) @db.Uuid
+  days         Int[]        @default([1, 2, 3, 4, 5])
+  start_hour   Int          @default(9)
+  end_hour     Int          @default(17)
+  buffer_min   Int          @default(15)
+  active       Boolean      @default(true)
+  bookings     Int          @default(0)
+  created_at   DateTime     @default(now()) @db.Timestamptz(6)
+  interviews   interviews[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model candidates {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  first_name       String           @default("")
+  last_name        String           @default("")
+  email            String           @default("")
+  phone            String           @default("")
+  location         String           @default("")
+  current_title    String           @default("")
+  current_company  String           @default("")
+  job_id           String?          @db.Uuid
+  stage_id         String
+  applied_at       DateTime         @default(now()) @db.Timestamptz(6)
+  stage_entered_at DateTime         @default(now()) @db.Timestamptz(6)
+  owner_id         String?          @db.Uuid
+  rating           Int              @default(0)
+  starred          Boolean          @default(false)
+  tags             String[]         @default([])
+  skills           String[]         @default([])
+  experience       Json             @default("[]")
+  education        Json             @default("[]")
+  summary          Json?
+  resume           Json?
+  resume_text      String?
+  parse_status     String           @default("ready")
+  created_at       DateTime         @default(now()) @db.Timestamptz(6)
+  source_id        String?
+  activity         activity[]
+  jobs             jobs?            @relation(fields: [job_id], references: [id], onUpdate: NoAction)
+  users            users?           @relation(fields: [owner_id], references: [id], onUpdate: NoAction)
+  sources          sources?         @relation(fields: [source_id], references: [id], onUpdate: NoAction)
+  stages           stages           @relation(fields: [stage_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  drive_files      drive_files[]
+  email_messages   email_messages[]
+  interviews       interviews[]
+  notes            notes[]
+
+  @@index([job_id], map: "candidates_job_idx")
+  @@index([source_id], map: "candidates_source_idx")
+  @@index([stage_id], map: "candidates_stage_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model drive_files {
+  drive_file_id String      @id
+  file_name     String
+  mime_type     String
+  folder_id     String?
+  folder_name   String      @default("")
+  size_kb       Int         @default(0)
+  modified_at   DateTime?   @db.Timestamptz(6)
+  status        String      @default("inbox")
+  candidate_id  String?     @db.Uuid
+  created_at    DateTime    @default(now()) @db.Timestamptz(6)
+  source_id     String?
+  candidates    candidates? @relation(fields: [candidate_id], references: [id], onUpdate: NoAction)
+  sources       sources?    @relation(fields: [source_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model email_campaigns {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subject         String
+  body            String
+  template_id     String?
+  from_address    String
+  sent_by_id      String?          @db.Uuid
+  send_at         DateTime         @default(now()) @db.Timestamptz(6)
+  status          String           @default("scheduled")
+  created_at      DateTime         @default(now()) @db.Timestamptz(6)
+  users           users?           @relation(fields: [sent_by_id], references: [id], onUpdate: NoAction)
+  email_templates email_templates? @relation(fields: [template_id], references: [id], onUpdate: NoAction)
+  email_messages  email_messages[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model email_messages {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  campaign_id     String          @db.Uuid
+  candidate_id    String?         @db.Uuid
+  to_address      String
+  subject         String          @default("")
+  status          String          @default("queued")
+  provider_id     String?
+  error           String?
+  sent_at         DateTime?       @db.Timestamptz(6)
+  opened_at       DateTime?       @db.Timestamptz(6)
+  clicked_at      DateTime?       @db.Timestamptz(6)
+  email_campaigns email_campaigns @relation(fields: [campaign_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  candidates      candidates?     @relation(fields: [candidate_id], references: [id], onUpdate: NoAction)
+
+  @@index([campaign_id], map: "email_messages_campaign_idx")
+}
+
+model email_templates {
+  id              String            @id
+  name            String
+  subject         String
+  body            String
+  category        String            @default("general")
+  updated_at      DateTime          @default(now()) @db.Timestamptz(6)
+  email_campaigns email_campaigns[]
+  stages          stages[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model interview_feedback {
+  id             String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  interview_id   String     @db.Uuid
+  author_id      String?    @db.Uuid
+  recommendation String
+  comment        String
+  created_at     DateTime   @default(now()) @db.Timestamptz(6)
+  users          users?     @relation(fields: [author_id], references: [id], onUpdate: NoAction)
+  interviews     interviews @relation(fields: [interview_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model interviews {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidate_id       String               @db.Uuid
+  job_id             String?              @db.Uuid
+  title              String
+  type               String
+  start_at           DateTime             @db.Timestamptz(6)
+  duration_min       Int
+  interviewer_ids    String[]             @default([]) @db.Uuid
+  meet_link          String?
+  location           String?
+  status             String               @default("scheduled")
+  calendar_event_id  String?
+  booked_via         String?              @db.Uuid
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  interview_feedback interview_feedback[]
+  booking_links      booking_links?       @relation(fields: [booked_via], references: [id], onUpdate: NoAction)
+  candidates         candidates           @relation(fields: [candidate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  jobs               jobs?                @relation(fields: [job_id], references: [id], onUpdate: NoAction)
+
+  @@index([candidate_id], map: "interviews_candidate_idx")
+  @@index([start_at], map: "interviews_start_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model jobs {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title             String
+  department        String       @default("")
+  location          String       @default("")
+  type              String       @default("Full-time")
+  status            String       @default("open")
+  hiring_manager_id String?      @db.Uuid
+  openings          Int          @default(1)
+  description       String       @default("")
+  drive_folder      String       @default("")
+  drive_folder_id   String?
+  created_at        DateTime     @default(now()) @db.Timestamptz(6)
+  candidates        candidates[]
+  interviews        interviews[]
+  users             users?       @relation(fields: [hiring_manager_id], references: [id], onUpdate: NoAction)
+}
+
+model notes {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidate_id String     @db.Uuid
+  author_id    String?    @db.Uuid
+  body         String
+  created_at   DateTime   @default(now()) @db.Timestamptz(6)
+  users        users?     @relation(fields: [author_id], references: [id], onUpdate: NoAction)
+  candidates   candidates @relation(fields: [candidate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([candidate_id], map: "notes_candidate_idx")
+}
+
+model sessions {
+  id         String   @id
+  user_id    String   @db.Uuid
+  expires_at DateTime @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id], map: "sessions_user_idx")
+}
+
+model settings {
+  key   String @id
+  value Json
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model sources {
+  id          String        @id
+  name        String
+  color       String        @default("#898781")
+  position    Int           @default(0)
+  active      Boolean       @default(true)
+  created_at  DateTime      @default(now()) @db.Timestamptz(6)
+  candidates  candidates[]
+  drive_files drive_files[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model stages {
+  id                     String           @id
+  name                   String
+  color                  String
+  kind                   String
+  position               Int
+  auto_email_template_id String?
+  candidates             candidates[]
+  email_templates        email_templates? @relation(fields: [auto_email_template_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model users {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email              String               @unique
+  name               String
+  title              String               @default("")
+  role               String
+  status             String               @default("invited")
+  avatar_color       String               @default("#1d5a3a")
+  last_active_at     DateTime?            @db.Timestamptz(6)
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  activity           activity[]
+  candidates         candidates[]
+  email_campaigns    email_campaigns[]
+  interview_feedback interview_feedback[]
+  jobs               jobs[]
+  notes              notes[]
+  sessions           sessions[]
+}

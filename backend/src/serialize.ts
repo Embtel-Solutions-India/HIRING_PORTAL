@@ -26,7 +26,7 @@ export const user = (u: UserRow, orgDomain = ""): TeamMember => ({
   title: u.title,
   status: u.status,
   avatarColor: u.avatar_color,
-  lastActiveAt: u.last_active_at ?? undefined,
+  lastActiveAt: u.last_active_at?.toISOString(),
   calendarConnected: !!orgDomain && u.email.endsWith(`@${orgDomain}`),
 });
 

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ResumeFile } from "../../frontend/src/types.ts";
 import { config } from "./config.ts";
-import { one, q } from "./db.ts";
+import { prisma } from "./db.ts";
 import * as google from "./google.ts";
 import { getSetting } from "./settings.ts";
 
@@ -21,13 +21,13 @@ export function mimeFor(fileName: string, fallback = "application/octet-stream")
 /** Makes sure the job has a Drive folder (under the root folder) and returns its id. */
 export async function ensureJobFolder(jobId: string): Promise<string | null> {
   if (!(await google.isConnected())) return null;
-  const job = await one<{ id: string; title: string; drive_folder_id: string | null }>("select id, title, drive_folder_id from jobs where id = $1", [jobId]);
+  const job = await prisma.jobs.findUnique({ where: { id: jobId }, select: { id: true, title: true, drive_folder_id: true } });
   if (!job) return null;
   if (job.drive_folder_id) return job.drive_folder_id;
   const root = await google.ensureRootFolder();
   const folderId = await google.findOrCreateFolder(job.title, root);
   const g = await getSetting("google");
-  await q("update jobs set drive_folder_id = $1, drive_folder = $2 where id = $3", [folderId, `${g.driveRootFolder}/${job.title}`, job.id]);
+  await prisma.jobs.updateMany({ where: { id: job.id }, data: { drive_folder_id: folderId, drive_folder: `${g.driveRootFolder}/${job.title}` } });
   return folderId;
 }
 
@@ -40,11 +40,10 @@ export async function storeResume(input: { jobId: string | null; sourceName?: st
   if (folderId) {
     const file = await google.uploadFile(folderId, input.fileName, mimeType, input.data);
     // Remember it so the Drive sync doesn't import it a second time.
-    await q(
-      `insert into drive_files (drive_file_id, file_name, mime_type, folder_id, size_kb, status) values ($1, $2, $3, $4, $5, 'imported')
-       on conflict (drive_file_id) do nothing`,
-      [file.id, input.fileName, mimeType, folderId, base.sizeKb],
-    );
+    await prisma.drive_files.createMany({
+      data: { drive_file_id: file.id, file_name: input.fileName, mime_type: mimeType, folder_id: folderId, size_kb: base.sizeKb, status: "imported" },
+      skipDuplicates: true,
+    });
     return { ...base, storage: "drive", driveFileId: file.id, driveUrl: file.webViewLink ?? `https://drive.google.com/file/d/${file.id}/view` };
   }
   const id = crypto.randomUUID();

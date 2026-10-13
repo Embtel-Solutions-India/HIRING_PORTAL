@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { config } from "../config.ts";
 import { verifySignature } from "../crypto.ts";
-import { one, q } from "../db.ts";
+import { prisma } from "../db.ts";
 import { HttpError, isUuid } from "../http.ts";
 import { busyFor, createInterview, overlaps, zonedDay, zonedTime } from "../scheduling.ts";
 import { getSetting } from "../settings.ts";
@@ -33,7 +33,7 @@ interface LinkRow {
 }
 
 async function activeLink(slug: string) {
-  const link = await one<LinkRow>("select * from booking_links where slug = $1", [slug]);
+  const link = (await prisma.booking_links.findUnique({ where: { slug } })) as LinkRow | null;
   if (!link || !link.active || !link.host_ids.length) throw new HttpError(404, "This booking link isn't available");
   return link;
 }
@@ -69,8 +69,8 @@ export default async function publicRoutes(app: FastifyInstance) {
     const link = await activeLink((req.params as { slug: string }).slug);
     const { c } = req.query as { c?: string };
     const org = await getSetting("org");
-    const hosts = await q<{ name: string; avatar_color: string }>("select name, avatar_color from users where id = any($1::uuid[]) and status = 'active'", [link.host_ids]);
-    const candidate = isUuid(c) ? await one<{ first_name: string }>("select first_name from candidates where id = $1", [c]) : undefined;
+    const hosts = await prisma.users.findMany({ where: { id: { in: link.host_ids }, status: "active" }, select: { name: true, avatar_color: true } });
+    const candidate = isUuid(c) ? await prisma.candidates.findUnique({ where: { id: c }, select: { first_name: true } }) : null;
     return {
       orgName: org.orgName,
       timezone: config.orgTimezone,
@@ -94,8 +94,9 @@ export default async function publicRoutes(app: FastifyInstance) {
       .parse(req.body);
 
     const candidate =
-      (isUuid(body.candidateId) ? await one<{ id: string; email: string }>("select id, email from candidates where id = $1", [body.candidateId]) : undefined) ??
-      (await one<{ id: string; email: string }>("select id, email from candidates where lower(email) = lower($1) order by applied_at desc limit 1", [body.email]));
+      (isUuid(body.candidateId) ? await prisma.candidates.findUnique({ where: { id: body.candidateId }, select: { id: true, email: true } }) : null) ??
+      // Raw so the comparison stays an exact lower() match (uses candidates_email_idx), not ILIKE.
+      (await prisma.$queryRaw<{ id: string; email: string }[]>`select id, email from candidates where lower(email) = lower(${body.email}) order by applied_at desc limit 1`)[0];
     if (!candidate) throw new HttpError(404, "We couldn't find your application. Please use the link from the email we sent you.");
 
     // Re-check the slot is still open and pick the host.
@@ -104,7 +105,7 @@ export default async function publicRoutes(app: FastifyInstance) {
     const slot = day.flatMap((d) => d.slots).find((s) => s.start === start.toISOString());
     if (!slot) throw new HttpError(409, "Sorry, that time was just taken. Please pick another.");
 
-    if (!candidate.email && body.email) await q("update candidates set email = $2 where id = $1", [candidate.id, body.email]);
+    if (!candidate.email && body.email) await prisma.candidates.updateMany({ where: { id: candidate.id }, data: { email: body.email } });
     const id = await createInterview({
       candidateId: candidate.id,
       title: link.title,
@@ -116,9 +117,9 @@ export default async function publicRoutes(app: FastifyInstance) {
       bookedVia: link.id,
       actorId: null,
     });
-    if (body.notes?.trim()) await q("insert into notes (candidate_id, author_id, body) values ($1, null, $2)", [candidate.id, `Booking note from candidate: ${body.notes.trim()}`]);
-    await q("update booking_links set bookings = bookings + 1 where id = $1", [link.id]);
-    const iv = await one<{ meet_link: string | null }>("select meet_link from interviews where id = $1", [id]);
+    if (body.notes?.trim()) await prisma.notes.create({ data: { candidate_id: candidate.id, author_id: null, body: `Booking note from candidate: ${body.notes.trim()}` } });
+    await prisma.booking_links.updateMany({ where: { id: link.id }, data: { bookings: { increment: 1 } } });
+    const iv = await prisma.interviews.findUnique({ where: { id }, select: { meet_link: true } });
     return { start: slot.start, meetLink: iv?.meet_link ?? null };
   });
 
@@ -128,7 +129,7 @@ export default async function publicRoutes(app: FastifyInstance) {
 
   app.get("/t/o/:file", async (req, reply) => {
     const id = (req.params as { file: string }).file.replace(/\.gif$/, "");
-    if (isUuid(id)) q("update email_messages set opened_at = coalesce(opened_at, now()) where id = $1", [id]).catch(() => {});
+    if (isUuid(id)) prisma.email_messages.updateMany({ where: { id, opened_at: null }, data: { opened_at: new Date() } }).catch(() => {});
     reply.header("cache-control", "no-store");
     return reply.type("image/gif").send(GIF);
   });
@@ -137,7 +138,13 @@ export default async function publicRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     const { u, s } = req.query as { u?: string; s?: string };
     if (!u || !s || !isUuid(id) || !verifySignature(`${id}|${u}`, s) || !/^https?:\/\//.test(u)) return reply.redirect(config.appUrl);
-    q("update email_messages set clicked_at = coalesce(clicked_at, now()), opened_at = coalesce(opened_at, now()) where id = $1", [id]).catch(() => {});
+    const now = new Date();
+    prisma
+      .$transaction([
+        prisma.email_messages.updateMany({ where: { id, clicked_at: null }, data: { clicked_at: now } }),
+        prisma.email_messages.updateMany({ where: { id, opened_at: null }, data: { opened_at: now } }),
+      ])
+      .catch(() => {});
     return reply.redirect(u);
   });
 }

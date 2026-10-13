@@ -11,7 +11,8 @@
     "start": "node src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "dev:db": "node scripts/dev-db.ts",
-    "seed:demo": "node --env-file-if-exists=.env scripts/seed-demo.ts"
+    "seed:demo": "node --env-file-if-exists=.env scripts/seed-demo.ts",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
@@ -19,9 +20,12 @@
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^10.1.2",
     "@fastify/static": "^10.1.5",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
     "fastify": "^5.12.5",
     "mammoth": "^1.13.0",
     "pg": "^8.23.1",
+    "prisma": "7.10.0",
     "unpdf": "^1.8.1",
     "zod": "^4.6.5"
   },

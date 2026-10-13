@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ResumeFile } from "../../frontend/src/types.ts";
 import { logActivity } from "./activity.ts";
 import { analyzeResume } from "./ai.ts";
-import { one, q } from "./db.ts";
+import { prisma } from "./db.ts";
 import { basicParse, extractResumeText } from "./resume.ts";
 import { getSetting } from "./settings.ts";
 import { readResume } from "./storage.ts";
@@ -18,21 +18,30 @@ export async function createCandidate(input: {
   actorId: string | null;
 }): Promise<string> {
   const guess = basicParse("", input.resume.fileName);
-  const row = await one<{ id: string }>(
-    `insert into candidates (first_name, last_name, job_id, stage_id, source_id, owner_id, resume, parse_status, tags)
-     values ($1, $2, $3, (select id from stages where kind = 'active' order by position limit 1), $4, $5, $6, 'pending', '{New}')
-     returning id`,
-    [guess.firstName, guess.lastName, input.jobId, input.sourceId, input.actorId, JSON.stringify(input.resume)],
-  );
-  const src = input.sourceId ? await one<{ name: string }>("select name from sources where id = $1", [input.sourceId]) : undefined;
+  const stage = await prisma.stages.findFirst({ where: { kind: "active" }, orderBy: { position: "asc" }, select: { id: true } });
+  const row = await prisma.candidates.create({
+    data: {
+      first_name: guess.firstName,
+      last_name: guess.lastName,
+      job_id: input.jobId,
+      stage_id: stage!.id,
+      source_id: input.sourceId,
+      owner_id: input.actorId,
+      resume: { ...input.resume },
+      parse_status: "pending",
+      tags: ["New"],
+    },
+    select: { id: true },
+  });
+  const src = input.sourceId ? await prisma.sources.findUnique({ where: { id: input.sourceId }, select: { name: true } }) : null;
   await logActivity(
     input.actorId,
     "resume_upload",
     `${input.intake === "drive" ? "imported" : "uploaded"} ${input.resume.fileName}${src ? ` (source: ${src.name})` : ""}`,
-    row!.id,
+    row.id,
   );
-  enqueueParse(row!.id);
-  return row!.id;
+  enqueueParse(row.id);
+  return row.id;
 }
 
 // ---------- queue ----------
@@ -61,44 +70,38 @@ function pump() {
 
 /** Re-queue anything left pending by a restart. */
 export async function resumePendingParses() {
-  const rows = await q<{ id: string }>("select id from candidates where parse_status = 'pending'");
+  const rows = await prisma.candidates.findMany({ where: { parse_status: "pending" }, select: { id: true } });
   rows.forEach((r) => enqueueParse(r.id));
 }
 
 async function parseCandidate(id: string, attempt = 1): Promise<void> {
-  const c = await one<{ resume: ResumeFile; job_id: string | null; first_name: string; last_name: string; email: string; phone: string }>(
-    "select resume, job_id, first_name, last_name, email, phone from candidates where id = $1",
-    [id],
-  );
-  if (!c?.resume) return;
+  const c = await prisma.candidates.findUnique({ where: { id }, select: { resume: true, job_id: true } });
+  const resume = c?.resume as ResumeFile | null | undefined;
+  if (!c || !resume) return;
   try {
-    const file = await readResume(c.resume);
+    const file = await readResume(resume);
     const text = await extractResumeText(file.data, file.mimeType);
-    const basic = basicParse(text, c.resume.fileName);
-    const job = c.job_id ? await one<{ title: string; description: string; department: string }>("select title, description, department from jobs where id = $1", [c.job_id]) : null;
+    const basic = basicParse(text, resume.fileName);
+    const job = c.job_id ? await prisma.jobs.findUnique({ where: { id: c.job_id }, select: { title: true, description: true, department: true } }) : null;
     const org = await getSetting("org");
     const ai = org.aiSummariesEnabled ? await analyzeResume(text, job ?? null) : null;
 
-    if (ai) {
-      await q(
-        `update candidates set
-           first_name = $2, last_name = $3, email = coalesce(nullif($4, ''), email), phone = coalesce(nullif($5, ''), phone),
-           location = $6, current_title = $7, current_company = $8, skills = $9, experience = $10, education = $11,
-           summary = $12, resume_text = $13, parse_status = 'ready', tags = array_remove(tags, 'New')
-         where id = $1`,
-        [
-          id,
-          ai.firstName || basic.firstName,
-          ai.lastName || basic.lastName,
-          ai.email || basic.email,
-          ai.phone || basic.phone,
-          ai.location,
-          ai.currentTitle,
-          ai.currentCompany,
-          ai.skills,
-          JSON.stringify(ai.experience),
-          JSON.stringify(ai.education),
-          JSON.stringify({
+    // Empty email/phone keep whatever is already on file.
+    const email = (ai?.email || basic.email) || undefined;
+    const phone = (ai?.phone || basic.phone) || undefined;
+    const data = ai
+      ? {
+          first_name: ai.firstName || basic.firstName,
+          last_name: ai.lastName || basic.lastName,
+          email,
+          phone,
+          location: ai.location,
+          current_title: ai.currentTitle,
+          current_company: ai.currentCompany,
+          skills: ai.skills,
+          experience: ai.experience,
+          education: ai.education,
+          summary: {
             headline: ai.headline,
             overview: ai.overview,
             strengths: ai.strengths,
@@ -106,18 +109,15 @@ async function parseCandidate(id: string, attempt = 1): Promise<void> {
             matchScore: ai.matchScore,
             yearsExperience: ai.yearsExperience,
             generatedAt: new Date().toISOString(),
-          }),
-          text,
-        ],
-      );
-    } else {
-      await q(
-        `update candidates set first_name = $2, last_name = $3, email = coalesce(nullif($4, ''), email), phone = coalesce(nullif($5, ''), phone),
-           resume_text = $6, parse_status = 'ready', tags = array_remove(tags, 'New')
-         where id = $1`,
-        [id, basic.firstName, basic.lastName, basic.email, basic.phone, text],
-      );
-    }
+          },
+          resume_text: text,
+          parse_status: "ready",
+        }
+      : { first_name: basic.firstName, last_name: basic.lastName, email, phone, resume_text: text, parse_status: "ready" };
+    await prisma.$transaction([
+      prisma.candidates.updateMany({ where: { id }, data }),
+      prisma.$executeRaw`update candidates set tags = array_remove(tags, 'New') where id = ${id}::uuid`,
+    ]);
   } catch (e) {
     const retryable = e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || e instanceof Anthropic.APIConnectionError;
     if (retryable && attempt < 4) {
@@ -125,6 +125,6 @@ async function parseCandidate(id: string, attempt = 1): Promise<void> {
       return parseCandidate(id, attempt + 1);
     }
     console.error(`[parse] candidate ${id}:`, e instanceof Error ? e.message : e);
-    await q("update candidates set parse_status = 'failed' where id = $1", [id]);
+    await prisma.candidates.updateMany({ where: { id }, data: { parse_status: "failed" } });
   }
 }

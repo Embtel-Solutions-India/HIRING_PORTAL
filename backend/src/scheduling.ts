@@ -1,7 +1,7 @@
 /** Interviews ↔ Google Calendar, free/busy, and time-zone math for booking links. */
 import { logActivity } from "./activity.ts";
 import { config } from "./config.ts";
-import { one, q } from "./db.ts";
+import { prisma } from "./db.ts";
 import { createCampaign } from "./email.ts";
 import * as google from "./google.ts";
 import { getSetting } from "./settings.ts";
@@ -21,12 +21,13 @@ export interface NewInterview {
 }
 
 export async function createInterview(input: NewInterview) {
-  const c = await one<{ id: string; first_name: string; last_name: string; email: string; job_id: string | null; job_title: string | null }>(
-    "select c.id, c.first_name, c.last_name, c.email, c.job_id, j.title as job_title from candidates c left join jobs j on j.id = c.job_id where c.id = $1",
-    [input.candidateId],
-  );
-  if (!c) throw new Error("Candidate not found");
-  const interviewers = await q<{ email: string; name: string }>("select email, name from users where id = any($1::uuid[])", [input.interviewerIds]);
+  const found = await prisma.candidates.findUnique({
+    where: { id: input.candidateId },
+    select: { id: true, first_name: true, last_name: true, email: true, job_id: true, jobs: { select: { title: true } } },
+  });
+  if (!found) throw new Error("Candidate not found");
+  const c = { ...found, job_title: found.jobs?.title ?? null };
+  const interviewers = await prisma.users.findMany({ where: { id: { in: input.interviewerIds } }, select: { email: true, name: true } });
   const org = await getSetting("org");
   const g = await getSetting("google");
   const end = new Date(input.start.getTime() + input.durationMin * 60_000);
@@ -55,11 +56,22 @@ export async function createInterview(input: NewInterview) {
     meetLink = event.meetLink ?? null;
   }
 
-  const row = await one<{ id: string }>(
-    `insert into interviews (candidate_id, job_id, title, type, start_at, duration_min, interviewer_ids, meet_link, location, calendar_event_id, booked_via)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
-    [c.id, c.job_id, input.title, input.type, input.start, input.durationMin, input.interviewerIds, meetLink, location, calendarEventId, input.bookedVia ?? null],
-  );
+  const row = await prisma.interviews.create({
+    data: {
+      candidate_id: c.id,
+      job_id: c.job_id,
+      title: input.title,
+      type: input.type,
+      start_at: input.start,
+      duration_min: input.durationMin,
+      interviewer_ids: input.interviewerIds,
+      meet_link: meetLink,
+      location,
+      calendar_event_id: calendarEventId,
+      booked_via: input.bookedVia ?? null,
+    },
+    select: { id: true },
+  });
   await logActivity(input.actorId, "interview_scheduled", `${input.bookedVia ? "booked" : "scheduled"} ${input.title.toLowerCase()} with ${name}`, c.id);
 
   // Without Google Calendar the candidate still gets a confirmation email.
@@ -72,17 +84,17 @@ export async function createInterview(input: NewInterview) {
       actorId: input.actorId,
     });
   }
-  return row!.id;
+  return row.id;
 }
 
 export async function cancelInterview(id: string) {
-  const iv = await one<{ calendar_event_id: string | null }>("select calendar_event_id from interviews where id = $1", [id]);
+  const iv = await prisma.interviews.findUnique({ where: { id }, select: { calendar_event_id: true } });
   if (iv?.calendar_event_id && (await google.isConnected())) await google.cancelEvent(iv.calendar_event_id);
 }
 
 /** Busy blocks per user id, from Google Calendar (if connected) plus interviews already in the ATS. */
 export async function busyFor(userIds: string[], from: Date, to: Date) {
-  const users = await q<{ id: string; email: string }>("select id, email from users where id = any($1::uuid[])", [userIds]);
+  const users = await prisma.users.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true } });
   const out: Record<string, { start: string; end: string }[]> = Object.fromEntries(users.map((u) => [u.id, []]));
   let source: "google" | "ats" = "ats";
   if (await google.isConnected()) {
@@ -94,12 +106,11 @@ export async function busyFor(userIds: string[], from: Date, to: Date) {
       console.warn("[calendar] free/busy failed:", e instanceof Error ? e.message : e);
     }
   }
-  const ivs = await q<{ interviewer_ids: string[]; start_at: string; duration_min: number }>(
-    "select interviewer_ids, start_at, duration_min from interviews where status = 'scheduled' and start_at < $2 and start_at + make_interval(mins => duration_min) > $1 and interviewer_ids && $3::uuid[]",
-    [from, to, userIds],
-  );
+  const ivs = await prisma.$queryRaw<{ interviewer_ids: string[]; start_at: Date; duration_min: number }[]>`
+    select interviewer_ids, start_at, duration_min from interviews
+    where status = 'scheduled' and start_at < ${to} and start_at + make_interval(mins => duration_min) > ${from} and interviewer_ids && ${userIds}::uuid[]`;
   for (const iv of ivs) {
-    const block = { start: iv.start_at, end: new Date(new Date(iv.start_at).getTime() + iv.duration_min * 60_000).toISOString() };
+    const block = { start: iv.start_at.toISOString(), end: new Date(iv.start_at.getTime() + iv.duration_min * 60_000).toISOString() };
     iv.interviewer_ids.filter((id) => out[id]).forEach((id) => out[id]!.push(block));
   }
   return { busy: out, source };

@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { logActivity } from "../activity.ts";
 import { config } from "../config.ts";
 import { decrypt, encrypt, randomToken } from "../crypto.ts";
-import { one, q } from "../db.ts";
+import { prisma } from "../db.ts";
 import * as google from "../google.ts";
 import { createSession, destroySession, HttpError, requirePerm, type UserRow } from "../http.ts";
 import * as s from "../serialize.ts";
@@ -38,19 +38,18 @@ const safeReturn = (p: unknown) => (typeof p === "string" && p.startsWith("/") &
 async function signIn(email: string, displayName: string): Promise<UserRow | "not_invited" | "deactivated" | "wrong_domain"> {
   email = email.toLowerCase();
   if (config.allowedEmailDomain && !email.endsWith(`@${config.allowedEmailDomain}`) && email !== config.superAdminEmail) return "wrong_domain";
-  let user = await one<UserRow>("select * from users where email = $1", [email]);
+  let user = (await prisma.users.findUnique({ where: { email } })) as UserRow | null;
   if (!user && email === config.superAdminEmail) {
-    const count = await one<{ n: number }>("select count(*)::int as n from users");
-    user = await one<UserRow>(
-      "insert into users (email, name, title, role, status, avatar_color) values ($1, $2, $3, 'super_admin', 'active', $4) returning *",
-      [email, displayName || email.split("@")[0], "Super Admin", AVATAR_COLORS[0]],
-    );
-    if (count?.n === 0) {
+    const count = await prisma.users.count();
+    user = (await prisma.users.create({
+      data: { email, name: displayName || email.split("@")[0]!, title: "Super Admin", role: "super_admin", status: "active", avatar_color: AVATAR_COLORS[0]! },
+    })) as UserRow;
+    if (count === 0) {
       // First run: a default booking link hosted by the Super Admin so {{booking_link}} works right away.
-      await q(
-        "insert into booking_links (slug, title, duration_min, type, host_ids) values ('intro-call', '30-min intro call', 30, 'video', $1) on conflict do nothing",
-        [[user!.id]],
-      );
+      await prisma.booking_links.createMany({
+        data: { slug: "intro-call", title: "30-min intro call", duration_min: 30, type: "video", host_ids: [user.id] },
+        skipDuplicates: true,
+      });
     }
   }
   if (!user) return "not_invited";
@@ -58,7 +57,7 @@ async function signIn(email: string, displayName: string): Promise<UserRow | "no
   // The configured Super Admin can always get back in, even if someone changed their role.
   const role = email === config.superAdminEmail ? "super_admin" : user.role;
   const name = user.status === "invited" && displayName ? displayName : user.name;
-  return (await one<UserRow>("update users set status = 'active', role = $2, name = $3, last_active_at = now() where id = $1 returning *", [user.id, role, name]))!;
+  return (await prisma.users.update({ where: { id: user.id }, data: { status: "active", role, name, last_active_at: new Date() } })) as UserRow;
 }
 
 export default async function authRoutes(app: FastifyInstance) {
@@ -135,7 +134,7 @@ export default async function authRoutes(app: FastifyInstance) {
     google.clearTokenCache();
     await patchSetting("google", { connected: true, account: info.email, refreshTokenEnc: encrypt(token.refresh_token), scopes: token.scope, driveRootFolderId: undefined });
     // Folder ids belong to the previously connected account; they're recreated on demand.
-    await q("update jobs set drive_folder_id = null");
+    await prisma.jobs.updateMany({ data: { drive_folder_id: null } });
     try {
       await google.ensureRootFolder();
     } catch (e) {

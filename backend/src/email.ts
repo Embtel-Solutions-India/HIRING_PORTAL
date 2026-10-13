@@ -3,7 +3,7 @@ import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { logActivity } from "./activity.ts";
 import { config } from "./config.ts";
 import { sign } from "./crypto.ts";
-import { one, q } from "./db.ts";
+import { prisma } from "./db.ts";
 import { getSetting } from "./settings.ts";
 
 let ses: SESv2Client | null = null;
@@ -54,7 +54,7 @@ interface MergeContext {
 
 export async function mergeFields(ctx: MergeContext) {
   const org = await getSetting("org");
-  const link = await one<{ slug: string }>("select slug from booking_links where active order by bookings desc, created_at limit 1");
+  const link = await prisma.booking_links.findFirst({ where: { active: true }, orderBy: [{ bookings: "desc" }, { created_at: "asc" }], select: { slug: true } });
   return {
     first_name: ctx.firstName,
     last_name: ctx.lastName,
@@ -93,18 +93,26 @@ export async function createCampaign(input: { recipientIds: string[]; subject: s
   const org = await getSetting("org");
   const sendAt = input.scheduledAt ? new Date(input.scheduledAt) : new Date();
   const scheduled = sendAt.getTime() > Date.now() + 30_000;
-  const recipients = await q<{ id: string; email: string }>("select id, email from candidates where id = any($1::uuid[])", [input.recipientIds]);
-  const campaign = await one<{ id: string }>(
-    `insert into email_campaigns (subject, body, template_id, from_address, sent_by_id, send_at, status) values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-    [input.subject, input.body, input.templateId ?? null, org.senderAddress, input.actorId, sendAt, scheduled ? "scheduled" : "sending"],
-  );
+  const recipients = await prisma.candidates.findMany({ where: { id: { in: input.recipientIds } }, select: { id: true, email: true } });
+  const campaign = await prisma.email_campaigns.create({
+    data: {
+      subject: input.subject,
+      body: input.body,
+      template_id: input.templateId ?? null,
+      from_address: org.senderAddress,
+      sent_by_id: input.actorId,
+      send_at: sendAt,
+      status: scheduled ? "scheduled" : "sending",
+    },
+    select: { id: true },
+  });
   for (const r of recipients) {
-    await q("insert into email_messages (campaign_id, candidate_id, to_address) values ($1, $2, $3)", [campaign!.id, r.id, r.email]);
+    await prisma.email_messages.create({ data: { campaign_id: campaign.id, candidate_id: r.id, to_address: r.email } });
   }
   const label = recipients.length === 1 ? "1 candidate" : `${recipients.length} candidates`;
   await logActivity(input.actorId, "email_sent", `${scheduled ? "scheduled" : "sent"} “${input.subject}” to ${label}`, recipients.length === 1 ? recipients[0]!.id : null);
-  if (!scheduled) void sendCampaign(campaign!.id);
-  return campaign!.id;
+  if (!scheduled) void sendCampaign(campaign.id);
+  return campaign.id;
 }
 
 const sending = new Set<string>();
@@ -113,15 +121,20 @@ export async function sendCampaign(campaignId: string) {
   if (sending.has(campaignId)) return;
   sending.add(campaignId);
   try {
-    await q("update email_campaigns set status = 'sending' where id = $1", [campaignId]);
-    const campaign = await one<{ subject: string; body: string }>("select subject, body from email_campaigns where id = $1", [campaignId]);
+    await prisma.email_campaigns.updateMany({ where: { id: campaignId }, data: { status: "sending" } });
+    const campaign = await prisma.email_campaigns.findUnique({ where: { id: campaignId }, select: { subject: true, body: true } });
     const org = await getSetting("org");
-    const messages = await q<{ id: string; to_address: string; candidate_id: string | null; first_name: string; last_name: string; job_title: string | null; stage: string | null }>(
-      `select m.id, m.to_address, m.candidate_id, c.first_name, c.last_name, j.title as job_title, s.name as stage
-       from email_messages m left join candidates c on c.id = m.candidate_id left join jobs j on j.id = c.job_id left join stages s on s.id = c.stage_id
-       where m.campaign_id = $1 and m.status = 'queued'`,
-      [campaignId],
-    );
+    const messages = (
+      await prisma.email_messages.findMany({
+        where: { campaign_id: campaignId, status: "queued" },
+        select: {
+          id: true,
+          to_address: true,
+          candidate_id: true,
+          candidates: { select: { first_name: true, last_name: true, jobs: { select: { title: true } }, stages: { select: { name: true } } } },
+        },
+      })
+    ).map(({ candidates: c, ...m }) => ({ ...m, first_name: c?.first_name, last_name: c?.last_name, job_title: c?.jobs?.title, stage: c?.stages.name }));
     let failures = 0;
     for (const m of messages) {
       try {
@@ -130,21 +143,21 @@ export async function sendCampaign(campaignId: string) {
         const subject = render(campaign!.subject, fields);
         const text = render(campaign!.body, fields);
         const providerId = await deliver({ to: m.to_address, subject, text: `${text}\n\n${org.emailSignature}`, html: toHtml(text, org.emailSignature, m.id) });
-        await q("update email_messages set status = 'sent', subject = $2, provider_id = $3, sent_at = now() where id = $1", [m.id, subject, providerId]);
+        await prisma.email_messages.updateMany({ where: { id: m.id }, data: { status: "sent", subject, provider_id: providerId, sent_at: new Date() } });
       } catch (e) {
         failures++;
-        await q("update email_messages set status = 'failed', error = $2 where id = $1", [m.id, e instanceof Error ? e.message.slice(0, 500) : String(e)]);
+        await prisma.email_messages.updateMany({ where: { id: m.id }, data: { status: "failed", error: e instanceof Error ? e.message.slice(0, 500) : String(e) } });
       }
       await new Promise((r) => setTimeout(r, Math.ceil(1000 / config.email.maxPerSecond)));
     }
-    await q("update email_campaigns set status = $2 where id = $1", [campaignId, failures && failures === messages.length ? "failed" : "sent"]);
+    await prisma.email_campaigns.updateMany({ where: { id: campaignId }, data: { status: failures && failures === messages.length ? "failed" : "sent" } });
   } finally {
     sending.delete(campaignId);
   }
 }
 
 export async function sendDueCampaigns() {
-  const due = await q<{ id: string }>("select id from email_campaigns where status = 'scheduled' and send_at <= now()");
+  const due = await prisma.email_campaigns.findMany({ where: { status: "scheduled", send_at: { lte: new Date() } }, select: { id: true } });
   for (const c of due) await sendCampaign(c.id);
 }
 

@@ -65,7 +65,7 @@ export default function Jobs() {
           const jc = candidates.filter((c) => c.jobId === j.id);
           const hm = teamMap[j.hiringManagerId];
           const segments = stages.map((s) => ({ s, n: jc.filter((c) => c.stageId === s.id).length })).filter((x) => x.n > 0);
-          const hovered = hover?.job === j.id ? segments.find((x) => x.s.id === hover.stage) : undefined;
+          const hovered = hover?.job === j.id ? segments.find((x) => x.s.id === hover?.stage) : undefined;
           return (
             <div key={j.id} className={cn("card p-5", j.status !== "open" && "opacity-70")}>
               <div className="flex items-start gap-3">

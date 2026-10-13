@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { logActivity } from "../activity.ts";
-import { q } from "../db.ts";
+import { prisma } from "../db.ts";
 import { createSourceFolders, importDriveFiles, syncDrive } from "../drive.ts";
 import { requirePerm } from "../http.ts";
 
@@ -28,7 +28,7 @@ export default async function driveRoutes(app: FastifyInstance) {
   app.post("/api/drive/ignore", async (req) => {
     requirePerm(req, "resumes.upload");
     const { fileIds } = z.object({ fileIds: z.array(z.string().min(1)).min(1) }).parse(req.body);
-    await q("update drive_files set status = 'ignored' where drive_file_id = any($1::text[])", [fileIds]);
+    await prisma.drive_files.updateMany({ where: { drive_file_id: { in: fileIds } }, data: { status: "ignored" } });
     return { ok: true };
   });
 
