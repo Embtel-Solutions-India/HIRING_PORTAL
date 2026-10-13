@@ -2,7 +2,7 @@
 **/dist
 **/.env
 **/.dev-db
-**/data
+backend/data
 backups
 .git
 .claude
