@@ -1,0 +1,113 @@
+@import "tailwindcss";
+@import "@fontsource-variable/plus-jakarta-sans";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Paper & ink neutrals (warm) */
+  --color-paper: #f6f5f1;
+  --color-surface: #ffffff;
+  --color-sunken: #efede7;
+  --color-line: #e6e3db;
+  --color-line-strong: #d6d2c7;
+  --color-ink: #1b1a17;
+  --color-ink-2: #45423b;
+  --color-muted: #7a766c;
+  --color-faint: #a8a398;
+
+  /* Brand: deep forest with a lime highlight */
+  --color-brand-50: #eef6f0;
+  --color-brand-100: #d9ecdf;
+  --color-brand-200: #b4d9bf;
+  --color-brand-500: #2f7d52;
+  --color-brand-600: #22663f;
+  --color-brand-700: #1a5233;
+  --color-brand-800: #143f28;
+  --color-brand-900: #0f2e1d;
+  --color-lime: #d4f27a;
+  --color-lime-soft: #eef9cf;
+
+  --color-danger: #c2264b;
+  --color-warn: #b7791f;
+
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.125rem;
+
+  --shadow-card: 0 1px 2px rgba(27, 26, 23, 0.04), 0 1px 1px rgba(27, 26, 23, 0.03);
+  --shadow-pop: 0 12px 32px -8px rgba(27, 26, 23, 0.18), 0 2px 6px rgba(27, 26, 23, 0.06);
+  --shadow-lift: 0 18px 40px -12px rgba(15, 46, 29, 0.28);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    background: var(--color-lime);
+    color: var(--color-brand-900);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface shadow-card;
+  }
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-muted;
+  }
+  .field {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-faint transition outline-none focus:border-brand-500 focus:ring-3 focus:ring-brand-100;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Slim scrollbars for kanban & panels */
+.scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+.scroll-slim::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-slim::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 99px;
+}
+
+/* Resume "paper" preview */
+.resume-paper {
+  background: #fff;
+  box-shadow: 0 1px 0 var(--color-line), 0 10px 30px -12px rgba(27, 26, 23, 0.18);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

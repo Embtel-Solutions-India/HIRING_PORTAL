@@ -1,0 +1,51 @@
+# Production stack: Postgres + the app + Caddy (automatic HTTPS).
+# Values like ${DOMAIN} and ${POSTGRES_PASSWORD} come from the .env file next to this one.
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hirely
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: hirely
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hirely -d hirely"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://hirely:${POSTGRES_PASSWORD}@db:5432/hirely
+    volumes:
+      - appdata:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  appdata:
+  caddy_data:
+  caddy_config:
