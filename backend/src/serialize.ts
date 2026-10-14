@@ -174,6 +174,7 @@ export async function orgSettings(): Promise<OrgSettings> {
       appUrl: config.appUrl,
       aiConfigured: aiConfigured(),
       emailTransport: config.email.transport,
+      smtpHost: config.email.smtp.host,
       googleOAuthConfigured: !!(config.google.clientId && config.google.clientSecret),
       timezone: config.orgTimezone,
     },

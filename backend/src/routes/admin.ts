@@ -1,5 +1,4 @@
 import dns from "node:dns/promises";
-import { CreateEmailIdentityCommand, GetEmailIdentityCommand, NotFoundException, SESv2Client } from "@aws-sdk/client-sesv2";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { canManageRole, ROLE_LABEL } from "../../../frontend/src/lib/permissions.ts";
@@ -260,30 +259,19 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Registers the domain with Amazon SES (first time) and reports the DNS records to add + their status. */
+  /** Checks the domain's SPF and DMARC records. DKIM keys come from the SMTP provider's own dashboard. */
   app.post("/api/settings/email/verify", async (req) => {
     requirePerm(req, "settings.email");
     const org = await getSetting("org");
     const domain = org.emailDomain || org.senderAddress.split("@")[1] || "";
     if (!domain) throw new HttpError(400, "Set the email domain first");
-    const records: DnsRecord[] = [];
-    if (config.email.transport === "ses") {
-      const client = new SESv2Client({ region: config.email.awsRegion });
-      let identity;
-      try {
-        identity = await client.send(new GetEmailIdentityCommand({ EmailIdentity: domain }));
-      } catch (e) {
-        if (!(e instanceof NotFoundException)) throw new HttpError(502, `Amazon SES: ${e instanceof Error ? e.message : e}`);
-        await client.send(new CreateEmailIdentityCommand({ EmailIdentity: domain }));
-        identity = await client.send(new GetEmailIdentityCommand({ EmailIdentity: domain }));
-      }
-      const ok = identity.DkimAttributes?.Status === "SUCCESS";
-      for (const token of identity.DkimAttributes?.Tokens ?? []) {
-        records.push({ type: "DKIM", host: `${token}._domainkey.${domain}`, value: `${token}.dkim.amazonses.com`, verified: ok });
-      }
-    }
-    const dmarc = await dns.resolveTxt(`_dmarc.${domain}`).then((r) => r.map((x) => x.join("")).find((t) => t.startsWith("v=DMARC1"))).catch(() => undefined);
-    records.push({ type: "DMARC", host: `_dmarc.${domain}`, value: dmarc ?? `v=DMARC1; p=none; rua=mailto:dmarc@${domain}`, verified: !!dmarc });
+    const txt = (host: string, prefix: string) => dns.resolveTxt(host).then((r) => r.map((x) => x.join("")).find((t) => t.startsWith(prefix))).catch(() => undefined);
+    const spf = await txt(domain, "v=spf1");
+    const dmarc = await txt(`_dmarc.${domain}`, "v=DMARC1");
+    const records: DnsRecord[] = [
+      { type: "SPF", host: domain, value: spf ?? "v=spf1 include:<your SMTP provider> ~all", verified: !!spf },
+      { type: "DMARC", host: `_dmarc.${domain}`, value: dmarc ?? `v=DMARC1; p=none; rua=mailto:dmarc@${domain}`, verified: !!dmarc },
+    ];
     await setSetting("dns", records);
     return { records };
   });

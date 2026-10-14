@@ -231,7 +231,7 @@ function Integrations() {
           <span className="font-mono text-[13px]">{sys?.appUrl}</span>
         </Row>
         <Row label="Email delivery" hint="EMAIL_TRANSPORT">
-          <Status ok={sys?.emailTransport === "ses"}>{sys?.emailTransport === "ses" ? "Amazon SES" : "Log only (not sent)"}</Status>
+          <Status ok={sys?.emailTransport === "smtp"}>{sys?.emailTransport === "smtp" ? `SMTP (${sys.smtpHost})` : "Log only (not sent)"}</Status>
         </Row>
         <Row label="Time zone for booking links" hint="ORG_TIMEZONE">
           <span className="font-mono text-[13px]">{sys?.timezone}</span>
@@ -257,16 +257,16 @@ function EmailDomain() {
   });
   const [verifying, setVerifying] = useState(false);
   const [testing, setTesting] = useState(false);
-  const ses = settings.system?.emailTransport === "ses";
+  const smtp = settings.system?.emailTransport === "smtp";
   const records = settings.dnsRecords;
   const allVerified = records.length > 0 && records.every((r) => r.verified);
 
   return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_1.1fr]">
       <Section icon={<span className="text-sm font-bold">@</span>} title="Sender identity" description="Every candidate email is sent from your own domain.">
-        {!ses && (
+        {!smtp && (
           <p className="rounded-lg bg-amber-50 p-3 text-[13px] text-amber-900">
-            Emails are currently only printed to the server log. Set <code>EMAIL_TRANSPORT=ses</code> plus AWS credentials to send for real (DEPLOY.md, step 4).
+            Emails are currently only printed to the server log. Set <code>EMAIL_TRANSPORT=smtp</code> plus your SMTP provider's settings to send for real (DEPLOY.md, step 4).
           </p>
         )}
         <Field label="Company name" hint="Used in {{company}} and the booking page">
@@ -297,7 +297,7 @@ function EmailDomain() {
               setTesting(true);
               const ok = await sendTest();
               setTesting(false);
-              if (ok) toast(ses ? "Test email sent to your inbox" : "Test email printed to the server log (EMAIL_TRANSPORT=log)", "info");
+              if (ok) toast(smtp ? "Test email sent to your inbox" : "Test email printed to the server log (EMAIL_TRANSPORT=log)", "info");
             }}
           >
             Send test email
@@ -329,7 +329,7 @@ function EmailDomain() {
       >
         {records.length === 0 ? (
           <p className="text-sm text-muted">
-            {ses ? "Press “Get records” to register your domain with Amazon SES and see the DNS records to add." : "Available once email is set up with Amazon SES."}
+            Press “Get records” to check your domain's SPF and DMARC records. Add the DKIM records from your SMTP provider's dashboard.
           </p>
         ) : (
           <div className="space-y-2">

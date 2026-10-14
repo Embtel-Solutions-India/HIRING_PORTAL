@@ -1,6 +1,6 @@
 # Hirely: internal applicant tracking
 
-A hiring workspace for your team. Resumes live in **Google Drive**, interviews land on **Google Calendar**, candidate emails go out from **your own domain** (Amazon SES), and **Claude** summarizes every resume.
+A hiring workspace for your team. Resumes live in **Google Drive**, interviews land on **Google Calendar**, candidate emails go out from **your own domain** (any SMTP provider), and **Claude** summarizes every resume.
 
 - **Pipeline board.** Drag candidates from Screening to Onboarding. The whole team sees the same board, refreshed live.
 - **Swipe review.** Flip through resumes and AI summaries with the ‹ › arrows, the ← → keys, or by swiping on a phone. Advance or pass with one key.
@@ -14,7 +14,7 @@ A hiring workspace for your team. Resumes live in **Google Drive**, interviews l
 
 ```
 frontend/   React + Vite + Tailwind app (the screens)
-backend/    Node API (Fastify + PostgreSQL), Google, SES and Claude integrations
+backend/    Node API (Fastify + PostgreSQL), Google, SMTP and Claude integrations
 Dockerfile, docker-compose.yml, Caddyfile   production setup (app + database + HTTPS)
 scripts/    backup / restore / update helpers for the server
 ```

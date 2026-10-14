@@ -1,13 +1,17 @@
-/** Candidate email: templates, campaigns (bulk or single), Amazon SES delivery and open/click tracking. */
-import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
+/** Candidate email: templates, campaigns (bulk or single), SMTP delivery and open/click tracking. */
+import nodemailer, { type Transporter } from "nodemailer";
 import { logActivity } from "./activity.ts";
 import { config } from "./config.ts";
 import { sign } from "./crypto.ts";
 import { prisma } from "./db.ts";
 import { getSetting } from "./settings.ts";
 
-let ses: SESv2Client | null = null;
-const sesClient = () => (ses ??= new SESv2Client({ region: config.email.awsRegion }));
+let smtp: Transporter | null = null;
+const smtpClient = () => {
+  const { host, port, user, pass } = config.email.smtp;
+  // Port 465 is TLS from the start; anything else (587, 25, 2525) upgrades with STARTTLS.
+  return (smtp ??= nodemailer.createTransport({ host, port, secure: port === 465, auth: user ? { user, pass } : undefined }));
+};
 
 interface Outgoing {
   to: string;
@@ -23,21 +27,8 @@ async function deliver(msg: Outgoing): Promise<string> {
     console.log(`\n[email:log] From: ${from}\nTo: ${msg.to}\nSubject: ${msg.subject}\n\n${msg.text}\n`);
     return `log-${Date.now()}`;
   }
-  const res = await sesClient().send(
-    new SendEmailCommand({
-      FromEmailAddress: from,
-      Destination: { ToAddresses: [msg.to] },
-      ReplyToAddresses: org.replyTo ? [org.replyTo] : undefined,
-      ConfigurationSetName: config.email.sesConfigurationSet || undefined,
-      Content: {
-        Simple: {
-          Subject: { Data: msg.subject, Charset: "UTF-8" },
-          Body: { Text: { Data: msg.text, Charset: "UTF-8" }, Html: { Data: msg.html, Charset: "UTF-8" } },
-        },
-      },
-    }),
-  );
-  return res.MessageId ?? "";
+  const res = await smtpClient().sendMail({ from, to: msg.to, replyTo: org.replyTo || undefined, subject: msg.subject, text: msg.text, html: msg.html });
+  return res.messageId ?? "";
 }
 
 // ---------- rendering ----------

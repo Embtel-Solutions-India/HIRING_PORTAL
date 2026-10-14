@@ -2,14 +2,14 @@
 
 This guide takes you from zero to a live, secure hiring app at an address like **https://hire.yourcompany.com** that your team signs into with Google.
 
-Plan on about **2 hours**, plus up to a day waiting for Amazon to approve email sending (step 4e). You don't need to know how to code. You will copy and paste some commands.
+Plan on about **2 hours**, plus however long your email provider takes to verify your domain (step 4). You don't need to know how to code. You will copy and paste some commands.
 
 **What you'll end up with**
 
 | Piece | What it does | Rough monthly cost |
 |---|---|---|
 | AWS Lightsail server (2 GB) | Runs the app and its database, with automatic HTTPS | $12 |
-| Amazon SES | Sends candidate emails from your domain | $0.10 per 1,000 emails |
+| An SMTP email provider (your choice) | Sends candidate emails from your domain | Free tier to a few dollars, depending on provider |
 | Google Workspace (you already have it) | Sign-in, resume storage in Drive, interview events in Calendar | $0 extra |
 | Claude API (Anthropic) | Reads each resume and writes the summary | about 2–5¢ per resume |
 
@@ -69,48 +69,38 @@ This usually works within a few minutes. Check it from your own computer with `n
    - Click **Create**. Copy the **Client ID** and **Client secret** into a note for step 7.
 6. *(Only if your company restricts third-party apps.)* A Workspace super-admin goes to **admin.google.com → Security → Access and data control → API controls → Manage Third-Party App Access**, finds the Client ID, and sets it to **Trusted**.
 
-## Step 4 — Amazon SES: sending email from your domain
+## Step 4 — Email: sending from your domain over SMTP
 
-**a. Pick the SES region.** Search AWS for **Amazon Simple Email Service (SES)**. Use the region selector at the top right to choose a region, e.g. **US East (N. Virginia) us-east-1**, and remember it. Use the same region in step 7.
+Hirely sends email through any SMTP provider. Pick one you already use or like.
 
-**b. Create sending credentials.**
-1. Search AWS for **IAM** → **Users** → **Create user** → name `hirely-ses` → Next.
-2. Choose **Attach policies directly** → **Create policy** → **JSON** tab. Paste the following, then name the policy `HirelySES`:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Action": ["ses:SendEmail", "ses:SendRawEmail", "ses:GetEmailIdentity", "ses:CreateEmailIdentity"],
-         "Resource": "*"
-       }
-     ]
-   }
-   ```
-3. Back on the user screen, refresh the policy list, tick **HirelySES** → **Create user**.
-4. Open the user → **Security credentials** → **Create access key** → choose *Application running outside AWS* → **Create**. Copy the **Access key ID** and **Secret access key**. You only see the secret once.
+**a. Get SMTP settings from your provider.** You need a host, port, username and password (often an *app password* or *API key*):
 
-**c. Verify your domain.** You can do this from the app after launch (Settings → Email domain → **Get records**), or now in SES:
-1. SES → **Identities** → **Create identity** → **Domain** → `yourcompany.com` → keep *Easy DKIM* (RSA 2048) → **Create identity**.
-2. SES shows **3 CNAME records**. Add each one at your DNS provider exactly as shown.
-3. Also add a DMARC record if you don't have one:
+| Provider | Host | Port | Username / password |
+|---|---|---|---|
+| Google Workspace | `smtp.gmail.com` | 587 | your address / an [app password](https://myaccount.google.com/apppasswords) (low volume only, ~2,000/day) |
+| Microsoft 365 | `smtp.office365.com` | 587 | your address / password (SMTP AUTH must be enabled for the mailbox) |
+| SendGrid | `smtp.sendgrid.net` | 587 | `apikey` / your API key |
+| Mailgun | `smtp.mailgun.org` | 587 | the domain's SMTP login / password |
+| Brevo | `smtp-relay.brevo.com` | 587 | your SMTP login / SMTP key |
+| Postmark | `smtp.postmarkapp.com` | 587 | server API token / same token |
+| Amazon SES | `email-smtp.<region>.amazonaws.com` | 587 | SES SMTP credentials |
+| Zoho Mail | `smtp.zoho.com` | 587 | your address / app password |
 
-   | Type | Name | Value |
-   |---|---|---|
-   | TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:dmarc@yourcompany.com` |
+Use port **587** unless your provider says 465.
 
-   Verification usually finishes within an hour.
+**b. Verify your domain with the provider.** In the provider's dashboard, add your domain (e.g. `yourcompany.com`). It will show **DKIM** records (and usually an **SPF** value). Add them at your DNS provider exactly as shown. Also add a DMARC record if you don't have one:
 
-> Already using Google Workspace for email? That's fine. These records only *add* SES as an approved sender. They don't change where your mail is delivered.
+| Type | Name | Value |
+|---|---|---|
+| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:dmarc@yourcompany.com` |
 
-**d. Choose the sender address**, e.g. `careers@yourcompany.com`. It doesn't need its own inbox. Set the **reply-to** to a real inbox or Google Group (e.g. `recruiting@yourcompany.com`) so candidate replies reach a person.
+> Your domain can only have **one** SPF record. If you already have one (e.g. for Google Workspace), add the provider's `include:` to it rather than creating a second.
 
-**e. Request production access.** New SES accounts start in a *sandbox* that can only email addresses you've verified. Go to SES → **Get set up** (or **Account dashboard**) → **Request production access**.
-- Mail type: **Transactional**
-- Use case, for example: *"Internal applicant tracking system. We email job applicants who applied to us: application received, interview scheduling, and status updates. Low volume, a few hundred per month. Every email has a reply-to address."*
+After launch, **Settings → Email domain → Get records** checks that SPF and DMARC are in place.
 
-Approval usually takes under 24 hours. Until then, set `EMAIL_TRANSPORT=log` in step 7 so nothing is sent, or test only with addresses you've verified in SES.
+**c. Choose the sender address**, e.g. `careers@yourcompany.com`, on the verified domain. It doesn't need its own inbox. Set the **reply-to** to a real inbox or Google Group (e.g. `recruiting@yourcompany.com`) so candidate replies reach a person.
+
+Until the domain is verified, set `EMAIL_TRANSPORT=log` in step 7 so nothing is sent.
 
 ## Step 5 — Claude API key (AI resume summaries)
 
@@ -201,9 +191,9 @@ Fill in:
 - `SUPER_ADMIN_EMAIL`: **your** Google account email
 - `ALLOWED_EMAIL_DOMAIN`: `yourcompany.com`
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`: from step 3.5
-- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`: from step 4
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`: from step 4
 - `EMAIL_FROM_ADDRESS`, `EMAIL_REPLY_TO`
-- `EMAIL_TRANSPORT`: `ses` (or `log` until SES production access is approved)
+- `EMAIL_TRANSPORT`: `smtp` (or `log` until your domain is verified)
 - `ANTHROPIC_API_KEY`: from step 5
 
 Save with **Ctrl+O**, then **Enter**, then **Ctrl+X** to exit.
@@ -288,8 +278,8 @@ Your `.env` and data are not touched.
 | "…isn't on the team yet" when signing in | That account hasn't been invited. Sign in first with `SUPER_ADMIN_EMAIL`, then invite people from **Team**. |
 | Google says "access blocked / admin policy" | A Workspace admin needs to trust the app (step 3.6). |
 | Connect Google says "didn't grant offline access" | Remove Hirely at https://myaccount.google.com/permissions, then click **Connect Google** again. |
-| Emails aren't arriving | Check that `EMAIL_TRANSPORT=ses`. In the SES sandbox, only verified addresses receive mail (step 4e). Check the DNS records under Settings → Email domain. |
-| Emails land in spam | Make sure all 3 DKIM CNAMEs and the DMARC record are verified, and that the From address is on the verified domain. |
+| Emails aren't arriving | Check that `EMAIL_TRANSPORT=smtp` and the SMTP settings (step 4a). Failed sends store the provider's error; check `docker compose logs app`. Check the DNS records under Settings → Email domain. |
+| Emails land in spam | Make sure your provider shows the domain verified (DKIM), and SPF and DMARC pass under Settings → Email domain, and that the From address is on the verified domain. |
 | Resumes dropped in Drive don't appear | They must be PDF, Word (.docx) or Google Docs inside `ATS/Resumes/` or a job sub-folder of the **connected** account. Use **Check now** in the Add candidates dialog. Files outside a job folder wait in the Drive inbox. |
 | "No AI summary" on candidates | Set `ANTHROPIC_API_KEY`, run `docker compose up -d`, then click **Retry** on the candidate. Check that billing is active in the Anthropic console. |
 | Something else | `docker compose logs --tail=200 app` shows the error. |

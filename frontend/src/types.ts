@@ -207,7 +207,8 @@ export interface OrgSettings {
   system?: {
     appUrl: string;
     aiConfigured: boolean;
-    emailTransport: "ses" | "log";
+    emailTransport: "smtp" | "log";
+    smtpHost: string;
     googleOAuthConfigured: boolean;
     timezone: string;
   };

@@ -39,14 +39,18 @@ export const config = {
   },
 
   email: {
-    /** "ses" sends through Amazon SES; "log" prints emails to the server log (for testing). */
-    transport: (str("EMAIL_TRANSPORT", "log") === "ses" ? "ses" : "log") as "ses" | "log",
+    /** "smtp" sends through any SMTP provider; "log" prints emails to the server log (for testing). */
+    transport: (str("EMAIL_TRANSPORT", "log") === "smtp" ? "smtp" : "log") as "smtp" | "log",
     fromAddress: str("EMAIL_FROM_ADDRESS"),
     fromName: str("EMAIL_FROM_NAME", "Talent Team"),
     replyTo: str("EMAIL_REPLY_TO"),
-    awsRegion: str("AWS_REGION", "us-east-1"),
-    sesConfigurationSet: str("SES_CONFIGURATION_SET"),
-    maxPerSecond: Math.max(1, Number(str("SES_MAX_PER_SECOND", "5"))),
+    smtp: {
+      host: str("SMTP_HOST"),
+      port: Number(str("SMTP_PORT", "587")),
+      user: str("SMTP_USER"),
+      pass: str("SMTP_PASS"),
+    },
+    maxPerSecond: Math.max(1, Number(str("EMAIL_MAX_PER_SECOND", "5"))),
   },
 
   anthropicApiKey: str("ANTHROPIC_API_KEY"),
@@ -65,6 +69,7 @@ export function assertConfig() {
     if (!config.google.clientId || !config.google.clientSecret) problems.push("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required");
     if (!config.appUrl.startsWith("https://")) problems.push("APP_URL must start with https:// in production");
   }
+  if (config.email.transport === "smtp" && !config.email.smtp.host) problems.push("SMTP_HOST is required when EMAIL_TRANSPORT=smtp");
   if (problems.length) {
     console.error("\nConfiguration problems:\n - " + problems.join("\n - ") + "\n");
     process.exit(1);
