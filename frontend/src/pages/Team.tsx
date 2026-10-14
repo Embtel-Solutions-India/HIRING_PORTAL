@@ -210,14 +210,14 @@ function InviteModal({ open, onClose, roles }: { open: boolean; onClose: () => v
   const [title, setTitle] = useState("");
   const [role, setRole] = useState<Role>("interviewer");
   const [sending, setSending] = useState(false);
-  const domainOk = !settings.emailDomain || email.toLowerCase().endsWith(`@${settings.emailDomain}`);
+  const external = !!settings.emailDomain && email.includes("@") && !email.toLowerCase().endsWith(`@${settings.emailDomain}`);
 
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Invite a teammate"
-      description={`They'll sign in with their @${settings.emailDomain} Google account.`}
+      description="They'll sign in with Google using the email below."
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -225,13 +225,14 @@ function InviteModal({ open, onClose, roles }: { open: boolean; onClose: () => v
           </Button>
           <Button
             variant="primary"
-            disabled={!name.trim() || !email.includes("@") || !domainOk || sending}
+            disabled={!name.trim() || !email.includes("@") || sending}
             onClick={async () => {
               setSending(true);
-              const ok = await invite({ name: name.trim(), email: email.trim().toLowerCase(), role, title });
+              const r = await invite({ name: name.trim(), email: email.trim().toLowerCase(), role, title });
               setSending(false);
-              if (!ok) return;
-              toast(`Invite sent to ${email}`);
+              if (!r) return;
+              if (r.emailError) toast(`${email} was added, but the invite email failed: ${r.emailError}. Fix the email settings, then use Resend invite.`, "error");
+              else toast(`Invite sent to ${email}`);
               setName("");
               setEmail("");
               onClose();
@@ -247,7 +248,7 @@ function InviteModal({ open, onClose, roles }: { open: boolean; onClose: () => v
         <Field label="Full name">
           <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="Google account email" hint={email && !domainOk ? <span className="text-danger">Must be an @{settings.emailDomain} address</span> : "They sign in with Google using this address."}>
+        <Field label="Google account email" hint={external ? "Outside your company. This email must be a Google account (Gmail, Google Workspace, or a Google account made with this email)." : "They sign in with Google using this address."}>
           <input className="field" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={`name@${settings.emailDomain}`} />
         </Field>
         <Field label="Job title">

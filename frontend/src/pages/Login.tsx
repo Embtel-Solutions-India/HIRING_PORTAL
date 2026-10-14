@@ -15,7 +15,7 @@ interface AuthConfig {
 const ERRORS: Record<string, string> = {
   not_invited: "isn't on the team yet. Ask an admin to invite you, then try again.",
   deactivated: "has been deactivated. Ask an admin if you need access again.",
-  wrong_domain: "isn't a company account. Sign in with your work Google account.",
+  wrong_domain: "isn't on the team. Sign in with your work Google account, or ask an admin to invite this address.",
   unverified: "Your Google email address isn't verified.",
   access_denied: "Google sign-in was cancelled.",
   cancelled: "Google sign-in was cancelled.",
@@ -83,7 +83,7 @@ export default function Login() {
             <GoogleMark size={20} /> Continue with Google
           </a>
           <p className="mt-2.5 flex items-center justify-center gap-1.5 text-center text-xs text-muted">
-            <Lock size={12} /> Only people invited by an admin{cfg?.emailDomain ? <> · <b className="font-semibold text-ink-2">@{cfg.emailDomain}</b></> : null}
+            <Lock size={12} /> Only people invited by an admin
           </p>
           {cfg && !cfg.googleConfigured && (
             <p className="mt-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-900">Google sign-in isn't configured on the server yet (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET). See DEPLOY.md.</p>

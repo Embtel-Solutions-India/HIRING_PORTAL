@@ -96,7 +96,6 @@ export default async function adminRoutes(app: FastifyInstance) {
     const actor = requirePerm(req, "users.manage");
     const body = z.object({ name: z.string().trim().min(1).max(120), email: z.string().trim().toLowerCase().email(), role: RoleEnum, title: z.string().max(120).default("") }).parse(req.body);
     if (!canManageRole(actor.role, body.role)) throw new HttpError(403, `You can't invite ${ROLE_LABEL[body.role]}s`);
-    if (config.allowedEmailDomain && !body.email.endsWith(`@${config.allowedEmailDomain}`)) throw new HttpError(400, `Only @${config.allowedEmailDomain} accounts can sign in`);
     const existing = await prisma.users.findUnique({ where: { email: body.email } });
     if (existing && existing.status !== "deactivated") throw new HttpError(409, "That person is already on the team");
     const count = await prisma.users.count();
@@ -108,7 +107,13 @@ export default async function adminRoutes(app: FastifyInstance) {
       });
     }
     await logActivity(actor.id, "user_invited", `invited ${body.email} as ${ROLE_LABEL[body.role]}`);
-    await sendInvite(body.email, body.name, actor.name, body.role).catch((e) => console.warn("[invite] email failed:", e));
+    // The invite is saved either way; report a failed email so the admin can fix settings and use "Resend invite".
+    try {
+      await sendInvite(body.email, body.name, actor.name, body.role);
+    } catch (e) {
+      console.warn("[invite] email failed:", e);
+      return { ok: true, emailError: e instanceof Error ? e.message : String(e) };
+    }
     return { ok: true };
   });
 

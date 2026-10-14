@@ -34,11 +34,11 @@ function readState(req: FastifyRequest, reply: FastifyReply, state: string) {
 
 const safeReturn = (p: unknown) => (typeof p === "string" && p.startsWith("/") && !p.startsWith("//") ? p : "/");
 
-/** Signs a person in by email if they're invited (or are the configured Super Admin). */
+/** Signs a person in by email if they're invited (or are the configured Super Admin). Invited people can be on any domain. */
 async function signIn(email: string, displayName: string): Promise<UserRow | "not_invited" | "deactivated" | "wrong_domain"> {
   email = email.toLowerCase();
-  if (config.allowedEmailDomain && !email.endsWith(`@${config.allowedEmailDomain}`) && email !== config.superAdminEmail) return "wrong_domain";
   let user = (await prisma.users.findUnique({ where: { email } })) as UserRow | null;
+  if (!user && config.allowedEmailDomain && !email.endsWith(`@${config.allowedEmailDomain}`) && email !== config.superAdminEmail) return "wrong_domain";
   if (!user && email === config.superAdminEmail) {
     const count = await prisma.users.count();
     user = (await prisma.users.create({
@@ -80,7 +80,7 @@ export default async function authRoutes(app: FastifyInstance) {
     if (!config.google.clientId) throw new HttpError(500, "Google sign-in isn't configured (GOOGLE_CLIENT_ID).");
     const { returnTo } = req.query as { returnTo?: string };
     const state = setState(reply, { returnTo: safeReturn(returnTo) });
-    return reply.redirect(google.authUrl({ scopes: google.LOGIN_SCOPES, redirectUri: google.loginRedirectUri(), state, hd: config.allowedEmailDomain || undefined }));
+    return reply.redirect(google.authUrl({ scopes: google.LOGIN_SCOPES, redirectUri: google.loginRedirectUri(), state }));
   });
 
   app.get("/api/auth/google/callback", async (req, reply) => {

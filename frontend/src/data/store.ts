@@ -98,7 +98,8 @@ interface Actions {
 
   upsertJob: (job: Job & { description?: string }) => Promise<boolean>;
 
-  inviteUser: (input: { name: string; email: string; role: Role; title: string }) => Promise<boolean>;
+  /** null if the invite wasn't saved; `emailError` if it was saved but the email didn't go out. */
+  inviteUser: (input: { name: string; email: string; role: Role; title: string }) => Promise<{ emailError?: string } | null>;
   updateUser: (id: string, patch: Partial<Pick<TeamMember, "role" | "status" | "title" | "name">>) => Promise<boolean>;
   resendInvite: (id: string) => Promise<boolean>;
 
@@ -328,7 +329,7 @@ export const useStore = create<Store>()((set, get) => {
           description: job.description,
         }),
       ),
-    inviteUser: (input) => ok("Invite failed", () => api.post("/api/users/invite", input)),
+    inviteUser: (input) => run("Invite failed", () => api.post<{ emailError?: string }>("/api/users/invite", input)),
     updateUser: (id, patch) => {
       set((s) => ({ team: s.team.map((u) => (u.id === id ? { ...u, ...patch } : u)) }));
       return ok("Couldn't update", () => api.patch(`/api/users/${id}`, patch));
