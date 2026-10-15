@@ -5,10 +5,11 @@ import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
 import { pollDriveChanges } from "./drive-changes.ts";
 import * as google from "./google.ts";
-import { syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
+import { registerDriveFile, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
 import * as s3 from "./s3.ts";
-import { claimNext, complete, enqueue, fail, resetRunning, type JobRow } from "./sync-queue.ts";
-import { ChecksumMismatch, digest, s3KeyFor, s3MimeFor } from "./sync-rules.ts";
+import { driveFolderFor } from "./storage.ts";
+import { claimNext, complete, enqueue, fail, resetRunning, setPayload, type JobRow } from "./sync-queue.ts";
+import { ChecksumMismatch, digest, GOOGLE_DOC, s3KeyFor, s3MimeFor, s3NameFor } from "./sync-rules.ts";
 
 const frozen = (row: ResumeFileRow, job: JobRow) =>
   (row.state === "conflict" && !job.payload.resolve) || row.state === "pending_deletion" || row.state === "deleted";
@@ -57,12 +58,101 @@ async function toS3(job: JobRow, row: ResumeFileRow) {
   if (row.local_path && !row.drive_file_id && (await google.isConnected())) await enqueue(row.id, "to_drive");
 }
 
+/** Where a resume without a Drive file goes: its candidate's job/source folder. */
+async function folderForRow(row: ResumeFileRow): Promise<string> {
+  const c = row.candidate_id ? await prisma.candidates.findUnique({ where: { id: row.candidate_id }, select: { job_id: true, sources: { select: { name: true } } } }) : null;
+  return (await driveFolderFor(c?.job_id ?? null, c?.sources?.name)) ?? (await google.ensureRootFolder());
+}
+
+/** Creates a Drive file with a pre-generated id stored in the job, so a retry after a crash can't make a second file. */
+async function createDriveFileOnce(job: JobRow, folderId: string, name: string, mimeType: string, data: Buffer): Promise<string> {
+  let fileId = job.payload.newFileId as string | undefined;
+  if (!fileId) {
+    fileId = await google.generateFileId();
+    job.payload = { ...job.payload, newFileId: fileId };
+    await setPayload(job.id, job.payload);
+    await registerDriveFile(fileId, name, mimeType, folderId, data.length);
+  }
+  const exists = await google.getFileMeta(fileId).then(() => true, (e) => (e?.status === 404 ? false : Promise.reject(e)));
+  if (!exists) await google.uploadFile(folderId, name, mimeType, data, fileId);
+  return fileId;
+}
+
+/** S3 → Drive. Binary files get a new revision of the same Drive file; a Google Doc gets a PDF beside it and is archived. */
+async function toDrive(job: JobRow, row: ResumeFileRow) {
+  if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
+  if (!row.s3_key) throw new Error("No S3 copy yet");
+  if (!(await google.isConnected())) throw new Error("Google Drive isn't connected");
+  const data = await s3.get(row.s3_key, row.s3_version_id ?? undefined);
+  const { md5 } = digest(data);
+  if (job.payload.md5 !== md5) {
+    // Lets the change feed recognise this upload as our own echo.
+    job.payload = { ...job.payload, md5 };
+    await setPayload(job.id, job.payload);
+  }
+  const mimeType = s3MimeFor(row.mime_type);
+  const name = s3NameFor(row.file_name, row.mime_type);
+  let fileId = row.drive_file_id;
+  const current = fileId ? await google.getFileMeta(fileId) : null;
+  if (fileId && current?.mimeType === GOOGLE_DOC) {
+    const parent = current.parents?.[0] ?? (await google.ensureRootFolder());
+    const newId = await createDriveFileOnce(job, parent, name, mimeType, data);
+    await google.moveFile(fileId, await google.findOrCreateFolder("_archive", await google.ensureRootFolder()));
+    fileId = newId;
+  } else if (fileId) {
+    await google.updateFileContent(fileId, mimeType, data);
+  } else {
+    fileId = await createDriveFileOnce(job, await folderForRow(row), name, mimeType, data);
+  }
+  const meta = await google.getFileMeta(fileId);
+  if (Number(meta.size) !== data.length || meta.md5Checksum !== md5) throw new ChecksumMismatch("Drive upload");
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.resume_files.update({
+      where: { id: row.id },
+      data: {
+        drive_file_id: fileId,
+        drive_md5: md5,
+        drive_version: meta.version ?? null,
+        drive_name: meta.name,
+        mime_type: meta.mimeType === GOOGLE_DOC ? row.mime_type : meta.mimeType,
+        state: "synced",
+        ...(job.payload.resolve ? { conflict: Prisma.DbNull } : {}),
+        last_synced_at: new Date(),
+        last_error: null,
+        updated_at: new Date(),
+      },
+    });
+    await syncCandidateResume(tx, updated);
+    await complete(job.id, tx);
+  });
+}
+
+async function renameDrive(job: JobRow, row: ResumeFileRow) {
+  if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
+  if (!row.drive_file_id) return complete(job.id, prisma, "skipped: no Drive file yet (to_drive will use the name)");
+  const name = String(job.payload.name);
+  await google.renameFile(row.drive_file_id, name);
+  const meta = await google.getFileMeta(row.drive_file_id);
+  if (meta.name !== name) throw new Error(`Drive kept the name "${meta.name}"`);
+  await prisma.$transaction(async (tx) => {
+    await tx.resume_files.update({
+      where: { id: row.id },
+      data: { drive_name: name, drive_version: meta.version ?? null, state: "synced", ...(job.payload.resolve ? { conflict: Prisma.DbNull } : {}), last_synced_at: new Date(), updated_at: new Date() },
+    });
+    await complete(job.id, tx);
+  });
+}
+
 export async function runJob(job: JobRow) {
   const row = await prisma.resume_files.findUnique({ where: { id: job.resume_file_id } });
   if (!row) return complete(job.id, prisma, "skipped: resume row gone");
   switch (job.kind) {
     case "to_s3":
       return toS3(job, row);
+    case "to_drive":
+      return toDrive(job, row);
+    case "rename_drive":
+      return renameDrive(job, row);
     default:
       throw new Error(`Unknown job kind ${job.kind}`);
   }

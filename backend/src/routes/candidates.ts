@@ -5,10 +5,15 @@ import type { ResumeFile } from "../../../frontend/src/types.ts";
 import { logActivity } from "../activity.ts";
 import { prisma } from "../db.ts";
 import { createCampaign } from "../email.ts";
+import * as google from "../google.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
 import { createCandidate, enqueueParse } from "../pipeline.ts";
+import { renameInS3, syncCandidateResume } from "../resume-files.ts";
 import { docxToHtml } from "../resume.ts";
-import { readResume, storeResume } from "../storage.ts";
+import * as s3 from "../s3.ts";
+import { mimeFor, readResume, storeResume } from "../storage.ts";
+import { enqueue } from "../sync-queue.ts";
+import { ChecksumMismatch, digest, safeKeyName } from "../sync-rules.ts";
 
 const MoveBody = z.object({ ids: z.array(z.string().uuid()).min(1).max(500), stageId: z.string(), notify: z.boolean().optional() });
 const PatchBody = z
@@ -111,7 +116,7 @@ export default async function candidateRoutes(app: FastifyInstance) {
     await assertCandidateAccess(reqUser, id);
     const c = await prisma.candidates.findUnique({ where: { id }, select: { resume: true } });
     const resume = c?.resume as ResumeFile | null | undefined;
-    if (!resume?.driveFileId) throw new HttpError(404, "No resume on file");
+    if (!resume?.driveFileId && !resume?.resumeFileId) throw new HttpError(404, "No resume on file");
     return resume;
   }
 
@@ -137,7 +142,7 @@ export default async function candidateRoutes(app: FastifyInstance) {
     const user = requirePerm(req, "resumes.download");
     const resume = await loadResume(user, (req.params as { id: string }).id);
     const file = await readResume(resume);
-    const name = resume.mimeType === "application/vnd.google-apps.document" ? `${resume.fileName}.pdf` : resume.fileName;
+    const name = file.mimeType === "application/pdf" && !/\.pdf$/i.test(resume.fileName) ? `${resume.fileName}.pdf` : resume.fileName;
     reply.header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
     return reply.type(file.mimeType).send(file.data);
   });
@@ -167,8 +172,64 @@ export default async function candidateRoutes(app: FastifyInstance) {
       }
       const data = await part.toBuffer();
       const resume = await storeResume({ jobId, sourceName: source?.name, fileName: part.filename, data, uploadedById: user.id });
-      created.push(await createCandidate({ resume, jobId, sourceId: source?.id ?? null, intake: "upload", actorId: user.id }));
+      const candidateId = await createCandidate({ resume, jobId, sourceId: source?.id ?? null, intake: "upload", actorId: user.id });
+      if (resume.resumeFileId) {
+        await prisma.resume_files.update({ where: { id: resume.resumeFileId }, data: { candidate_id: candidateId } });
+        if (await google.isConnected()) await enqueue(resume.resumeFileId, "to_drive", { md5: digest(data).md5 });
+      }
+      created.push(candidateId);
     }
     return { created, rejected };
+  });
+
+  async function editableResume(id: string) {
+    if (!isUuid(id)) throw new HttpError(404, "Not found");
+    const row = await prisma.resume_files.findUnique({ where: { candidate_id: id } });
+    if (!row?.s3_key) throw new HttpError(409, "This resume hasn't been copied to S3 yet — try again once the migration has finished");
+    if (row.state === "conflict" || row.state === "pending_deletion") throw new HttpError(409, "This resume has a sync issue — resolve it in Settings → Resume sync first");
+    return row;
+  }
+
+  app.post("/api/candidates/:id/resume", async (req) => {
+    const user = requirePerm(req, "candidates.edit");
+    const { id } = req.params as { id: string };
+    const row = await editableResume(id);
+    const part = await req.file();
+    if (!part || !/\.(pdf|docx)$/i.test(part.filename)) throw new HttpError(400, "Upload a PDF or Word (.docx) file");
+    const data = await part.toBuffer();
+    const { sha256, md5 } = digest(data);
+    const mimeType = mimeFor(part.filename);
+    const key = `${row.s3_key!.split("/").slice(0, 2).join("/")}/${safeKeyName(part.filename)}`;
+    const { versionId } = await s3.put(key, data, mimeType, sha256);
+    const back = await s3.get(key, versionId);
+    if (back.length !== data.length || digest(back).sha256 !== sha256) throw new ChecksumMismatch("S3 read-back");
+    await prisma.$transaction(async (tx) => {
+      const u = await tx.resume_files.update({
+        where: { id: row.id },
+        data: { s3_key: key, s3_version_id: versionId, sha256, size_bytes: data.length, file_name: part.filename, mime_type: mimeType, state: "pending", updated_at: new Date() },
+      });
+      await syncCandidateResume(tx, u);
+      await tx.candidates.update({ where: { id }, data: { parse_status: "pending" } });
+      await enqueue(row.id, "to_drive", { md5 }, tx);
+      if (part.filename !== row.drive_name) await enqueue(row.id, "rename_drive", { name: part.filename }, tx);
+    });
+    if (key !== row.s3_key) await s3.remove(row.s3_key!).catch((e) => console.warn("[resume] couldn't remove old key", e));
+    enqueueParse(id);
+    await logActivity(user.id, "resume_upload", `replaced the resume with ${part.filename}`, id);
+    return { ok: true };
+  });
+
+  app.patch("/api/candidates/:id/resume", async (req) => {
+    const user = requirePerm(req, "candidates.edit");
+    const { id } = req.params as { id: string };
+    const { fileName } = z
+      .object({ fileName: z.string().trim().min(1).max(200).refine((n) => !/[\/\\\x00-\x1f\x7f]/.test(n), "A file name can't contain / \\ or control characters") })
+      .parse(req.body);
+    const row = await editableResume(id);
+    if (fileName === row.file_name) return { ok: true };
+    await renameInS3(row, fileName);
+    await enqueue(row.id, "rename_drive", { name: fileName });
+    await logActivity(user.id, "resume_upload", `renamed the resume to ${fileName}`, id);
+    return { ok: true };
   });
 }
