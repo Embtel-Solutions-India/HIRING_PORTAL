@@ -1,5 +1,5 @@
 import { ArrowRight, Download, ExternalLink, FileText, Loader2, Mail, MapPin, Phone, RefreshCw, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DocxViewer } from "./DocxViewer";
 import { PdfViewer } from "./PdfViewer";
 import { useCan, useJobMap, useStageMap, useStore } from "../data/store";
@@ -7,7 +7,8 @@ import type { Candidate } from "../types";
 import { cn, fmtDate, fullName } from "../lib/utils";
 import { Badge, Button, Checkbox, DriveMark, MatchScore, Menu, MenuItem, StageBadge } from "./ui";
 
-export const resumeUrl = (candidateId: string, kind: "preview" | "download") => `/api/candidates/${candidateId}/resume/${kind}`;
+export const resumeUrl = (candidateId: string, kind: "preview" | "download", version?: string) =>
+  `/api/candidates/${candidateId}/resume/${kind}${version ? `?v=${encodeURIComponent(version)}` : ""}`;
 
 /**
  * Resume viewer: the actual file (PDF rendered with pdf.js, Word shown as HTML), streamed through the API so
@@ -15,12 +16,19 @@ export const resumeUrl = (candidateId: string, kind: "preview" | "download") => 
  */
 export function ResumePreview({ candidate, compact }: { candidate: Candidate; compact?: boolean }) {
   const canDownload = useCan("resumes.download");
-  const hasFile = !!candidate.resume.driveFileId;
+  const hasFile = !!(candidate.resume.driveFileId || candidate.resume.resumeFileId);
   const isPdf = candidate.resume.mimeType === "application/pdf" || candidate.resume.mimeType === "application/vnd.google-apps.document";
   const isDocx = candidate.resume.mimeType.includes("wordprocessingml");
   const [mode, setMode] = useState<"file" | "parsed">(hasFile && (isPdf || isDocx) ? "file" : "parsed");
   const [fileError, setFileError] = useState("");
   const onError = useCallback((m: string) => setFileError(m), []);
+  const canEdit = useCan("candidates.edit");
+  const replaceResume = useStore((s) => s.replaceResume);
+  const renameResume = useStore((s) => s.renameResume);
+  const toast = useStore((s) => s.toast);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const sync = candidate.resume.syncState;
+  const editable = canEdit && candidate.resume.storage === "s3" && sync !== "conflict" && sync !== "pending_deletion";
 
   useEffect(() => {
     setFileError("");
@@ -32,6 +40,36 @@ export function ResumePreview({ candidate, compact }: { candidate: Candidate; co
       <div className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2">
         {candidate.resume.storage === "drive" ? <DriveMark size={15} /> : <FileText size={15} className="text-muted" />}
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{candidate.resume.fileName}</span>
+        {(sync === "conflict" || sync === "failed" || sync === "pending_deletion") && (
+          <Badge tone={sync === "failed" ? "danger" : "warn"}>{sync === "conflict" ? "sync conflict" : sync === "failed" ? "sync failed" : "pending deletion"}</Badge>
+        )}
+        {editable && (
+          <>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".pdf,.docx"
+              hidden
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f && (await replaceResume(candidate.id, f))) toast("Resume replaced");
+              }}
+            />
+            <button onClick={() => fileInput.current?.click()} className="h-7 rounded-md px-2 text-[12px] font-semibold text-ink-2 hover:bg-sunken" title="Replace with a new file">
+              Replace
+            </button>
+            <button
+              onClick={async () => {
+                const name = window.prompt("Rename resume", candidate.resume.fileName)?.trim();
+                if (name && name !== candidate.resume.fileName && (await renameResume(candidate.id, name))) toast("Resume renamed");
+              }}
+              className="h-7 rounded-md px-2 text-[12px] font-semibold text-ink-2 hover:bg-sunken"
+            >
+              Rename
+            </button>
+          </>
+        )}
         {hasFile && (isPdf || isDocx) && (
           <span className="flex rounded-md bg-sunken p-0.5 text-[11px] font-semibold">
             {(["file", "parsed"] as const).map((m) => (
@@ -41,13 +79,13 @@ export function ResumePreview({ candidate, compact }: { candidate: Candidate; co
             ))}
           </span>
         )}
-        {candidate.resume.storage === "drive" && candidate.resume.driveUrl && (
+        {candidate.resume.driveUrl && (
           <a href={candidate.resume.driveUrl} target="_blank" rel="noreferrer" className="hidden h-7 items-center gap-1 rounded-md px-2 text-[12px] font-semibold text-ink-2 hover:bg-sunken sm:inline-flex" title="Open in Google Drive (needs folder access)">
             <ExternalLink size={13} /> Drive
           </a>
         )}
         {hasFile && canDownload && (
-          <a href={resumeUrl(candidate.id, "download")} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-semibold text-ink-2 hover:bg-sunken" title="Download">
+          <a href={resumeUrl(candidate.id, "download", candidate.resume.version)} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-semibold text-ink-2 hover:bg-sunken" title="Download">
             <Download size={13} /> <span className="hidden sm:inline">Download</span>
           </a>
         )}
@@ -55,9 +93,9 @@ export function ResumePreview({ candidate, compact }: { candidate: Candidate; co
       <div className={cn("scroll-slim flex-1 overflow-y-auto bg-sunken", compact ? "p-3" : "p-4 sm:p-6")}>
         {mode === "file" && !fileError ? (
           isPdf ? (
-            <PdfViewer key={candidate.id} url={resumeUrl(candidate.id, "preview")} onError={onError} />
+            <PdfViewer key={candidate.id} url={resumeUrl(candidate.id, "preview", candidate.resume.version)} onError={onError} />
           ) : (
-            <DocxViewer key={candidate.id} url={resumeUrl(candidate.id, "preview")} onError={onError} />
+            <DocxViewer key={candidate.id} url={resumeUrl(candidate.id, "preview", candidate.resume.version)} onError={onError} />
           )
         ) : (
           <ParsedResume candidate={candidate} compact={compact} notice={fileError} />

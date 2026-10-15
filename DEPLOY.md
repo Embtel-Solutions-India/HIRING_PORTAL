@@ -110,6 +110,29 @@ Until the domain is verified, set `EMAIL_TRANSPORT=log` in step 7 so nothing is 
 
 Skip this step and the app still works; it just won't write summaries. You can add the key later.
 
+## Amazon S3 (resume storage)
+
+Resumes are stored in S3 and kept in sync with Google Drive. Skip this section to keep resumes in Drive only.
+
+1. Create a **private** bucket in your region. Block all public access.
+2. **Turn on Versioning** (Bucket → Properties → Bucket Versioning → Enable). The app refuses to store files without it.
+3. Add a lifecycle rule: *Permanently delete noncurrent versions* after 90 days (or your retention period).
+4. Create an IAM user with this policy (replace `YOUR-BUCKET`) and an access key:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       { "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject"], "Resource": "arn:aws:s3:::YOUR-BUCKET/*" },
+       { "Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::YOUR-BUCKET" }
+     ]
+   }
+   ```
+
+5. Set `AWS_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and optionally `RESUME_DELETE_GRACE_DAYS`) and restart.
+6. In **Settings → Resume sync**, click **Start migration**. Watch *Migrated to S3* reach *N of N*. Drive files are not changed.
+   Re-running the migration is safe. Keep the Drive originals until the dashboard shows every resume migrated and no failures.
+
 ## Step 6 — Put the app on the server
 
 **Connect to the server.** In Lightsail, open the instance and click **Connect using SSH**. A terminal opens in your browser. Paste these commands one at a time:

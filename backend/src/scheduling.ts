@@ -4,6 +4,7 @@ import { config } from "./config.ts";
 import { prisma } from "./db.ts";
 import { createCampaign } from "./email.ts";
 import * as google from "./google.ts";
+import { HttpError } from "./http.ts";
 import { getSetting } from "./settings.ts";
 
 export interface NewInterview {
@@ -56,22 +57,34 @@ export async function createInterview(input: NewInterview) {
     meetLink = event.meetLink ?? null;
   }
 
-  const row = await prisma.interviews.create({
-    data: {
-      candidate_id: c.id,
-      job_id: c.job_id,
-      title: input.title,
-      type: input.type,
-      start_at: input.start,
-      duration_min: input.durationMin,
-      interviewer_ids: input.interviewerIds,
-      meet_link: meetLink,
-      location,
-      calendar_event_id: calendarEventId,
-      booked_via: input.bookedVia ?? null,
-    },
-    select: { id: true },
-  });
+  const row = await prisma
+    .$transaction(async (tx) => {
+      // Share-lock the interviewers: a concurrent account delete either waits for this interview (and then sees it)
+      // or has already removed the account (and this booking is refused).
+      const ids = [...new Set(input.interviewerIds)];
+      const present = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM users WHERE id = ANY(${ids}::uuid[]) FOR SHARE`;
+      if (present.length !== ids.length) throw new HttpError(409, "One of the interviewers no longer exists — pick someone else");
+      return tx.interviews.create({
+        data: {
+          candidate_id: c.id,
+          job_id: c.job_id,
+          title: input.title,
+          type: input.type,
+          start_at: input.start,
+          duration_min: input.durationMin,
+          interviewer_ids: input.interviewerIds,
+          meet_link: meetLink,
+          location,
+          calendar_event_id: calendarEventId,
+          booked_via: input.bookedVia ?? null,
+        },
+        select: { id: true },
+      });
+    })
+    .catch(async (e) => {
+      if (calendarEventId) await google.cancelEvent(calendarEventId).catch(() => {});
+      throw e;
+    });
   await logActivity(input.actorId, "interview_scheduled", `${input.bookedVia ? "booked" : "scheduled"} ${input.title.toLowerCase()} with ${name}`, c.id);
 
   // Without Google Calendar the candidate still gets a confirmation email.

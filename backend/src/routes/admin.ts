@@ -161,6 +161,41 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Their notes, feedback, jobs and campaigns stay; the user FKs are ON DELETE SET NULL, sessions cascade.
+  app.delete("/api/users/:id", async (req) => {
+    const actor = requirePerm(req, "users.delete");
+    const { id } = req.params as { id: string };
+    const target = isUuid(id) ? ((await prisma.users.findUnique({ where: { id } })) as UserRow | null) : null;
+    if (!target) throw new HttpError(404, "Not found");
+    if (target.id === actor.id) throw new HttpError(400, "You can't delete your own account");
+    if (target.email === config.superAdminEmail) throw new HttpError(400, "This is the account set in SUPER_ADMIN_EMAIL — change that setting first");
+    await prisma.$transaction(async (tx) => {
+      // One lock statement, in id order, for the account and the active Super Admins: two deletes can't deadlock,
+      // and two admins deleting each other can't both pass the Super Admin check. Interview booking share-locks its
+      // interviewers, so a booking in flight finishes first (and is counted below), and later bookings see the account gone.
+      const locked = await tx.$queryRaw<{ id: string; super: boolean }[]>`
+        SELECT id, (role = 'super_admin' AND status = 'active') AS super FROM users
+        WHERE id = ${id}::uuid OR (role = 'super_admin' AND status = 'active') ORDER BY id FOR UPDATE`;
+      const supers = locked.filter((u) => u.super);
+      if (supers.some((s) => s.id === id) && supers.length <= 1) throw new HttpError(400, "There must always be at least one Super Admin");
+      // Don't leave upcoming interviews or booking links with nobody on them.
+      const [soloInterviews, soloLinks] = await Promise.all([
+        tx.interviews.count({ where: { status: "scheduled", start_at: { gt: new Date() }, interviewer_ids: { equals: [id] } } }),
+        tx.booking_links.findMany({ where: { host_ids: { equals: [id] } }, select: { title: true } }),
+      ]);
+      const blockers = [
+        soloInterviews && `${soloInterviews} upcoming interview${soloInterviews === 1 ? "" : "s"}`,
+        soloLinks.length && `booking link${soloLinks.length === 1 ? "" : "s"} ${soloLinks.map((l) => `“${l.title}”`).join(", ")}`,
+      ].filter(Boolean);
+      if (blockers.length) throw new HttpError(409, `${target.name} is the only person on ${blockers.join(" and ")} — reassign first`);
+      await tx.$executeRaw`UPDATE booking_links SET host_ids = array_remove(host_ids, ${id}::uuid) WHERE ${id}::uuid = ANY(host_ids)`;
+      await tx.$executeRaw`UPDATE interviews SET interviewer_ids = array_remove(interviewer_ids, ${id}::uuid) WHERE ${id}::uuid = ANY(interviewer_ids)`;
+      await tx.users.delete({ where: { id } });
+    });
+    await logActivity(actor.id, "user_deleted", `deleted ${target.name} (${target.email})`);
+    return { ok: true };
+  });
+
   // ---------- booking links ----------
 
   app.put("/api/booking-links/:id", async (req) => {

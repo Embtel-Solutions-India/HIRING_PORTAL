@@ -394,7 +394,7 @@ function InterviewDetail({ id, onClose }: { id: string | null; onClose: () => vo
               <p className="label">Scorecard</p>
               {iv.feedback?.map((f, i) => (
                 <div key={i} className="rounded-lg bg-paper p-3 text-[13px]">
-                  <b>{teamMap[f.authorId]?.name}</b> · <span className="capitalize">{f.recommendation.replace("_", " ")}</span>
+                  <b>{teamMap[f.authorId]?.name ?? "Deleted user"}</b> · <span className="capitalize">{f.recommendation.replace("_", " ")}</span>
                   <p className="mt-1 text-ink-2">{f.comment}</p>
                 </div>
               ))}

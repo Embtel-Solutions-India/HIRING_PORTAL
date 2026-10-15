@@ -13,6 +13,7 @@ import type { ResumeFile } from "../../frontend/src/types.ts";
 import { prisma } from "./db.ts";
 import * as google from "./google.ts";
 import { createCandidate } from "./pipeline.ts";
+import { trackDriveImport } from "./resume-files.ts";
 import { getSetting, patchSetting } from "./settings.ts";
 import { ensureJobFolder } from "./storage.ts";
 
@@ -134,6 +135,7 @@ export async function importDriveFiles(fileIds: string[], fallbackJobId: string 
     };
     const id = await createCandidate({ resume, jobId, sourceId: sourceId || f.source_id, intake: "drive", actorId });
     await prisma.drive_files.updateMany({ where: { drive_file_id: f.drive_file_id }, data: { status: "imported", candidate_id: id } });
+    await trackDriveImport(id, f);
     created.push(id);
   }
   return created;

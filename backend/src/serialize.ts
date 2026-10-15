@@ -14,6 +14,7 @@ import type {
 import { aiConfigured } from "./ai.ts";
 import { config } from "./config.ts";
 import type { UserRow } from "./http.ts";
+import { s3Configured } from "./s3.ts";
 import { getSetting } from "./settings.ts";
 
 type Row = Record<string, any>;
@@ -28,6 +29,7 @@ export const user = (u: UserRow, orgDomain = ""): TeamMember => ({
   avatarColor: u.avatar_color,
   lastActiveAt: u.last_active_at?.toISOString(),
   calendarConnected: !!orgDomain && u.email.endsWith(`@${orgDomain}`),
+  protected: u.email === config.superAdminEmail || undefined,
 });
 
 export const stage = (s: Row): Stage => ({
@@ -93,7 +95,7 @@ export function candidate(c: Row, notes: Row[]): Candidate {
     rating: c.rating,
     tags: c.tags,
     skills: c.skills,
-    resume: c.resume ?? { storage: "local", driveFileId: "", fileName: "No resume", mimeType: "", sizeKb: 0, uploadedAt: c.created_at, uploadedById: "", driveUrl: "" },
+    resume: c.resume ? { ...c.resume, syncState: c.resume_files?.state } : { storage: "local", driveFileId: "", fileName: "No resume", mimeType: "", sizeKb: 0, uploadedAt: c.created_at, uploadedById: "", driveUrl: "" },
     experience: c.experience,
     education: c.education,
     summary,
@@ -177,6 +179,8 @@ export async function orgSettings(): Promise<OrgSettings> {
       smtpHost: config.email.smtp.host,
       googleOAuthConfigured: !!(config.google.clientId && config.google.clientSecret),
       timezone: config.orgTimezone,
+      s3Configured: s3Configured(),
+      resumeGraceDays: config.resumeDeleteGraceDays,
     },
   };
 }

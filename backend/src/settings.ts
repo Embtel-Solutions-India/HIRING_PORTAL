@@ -55,6 +55,8 @@ const DEFAULTS = {
     autoMeetLinks: true,
   }),
   dns: (): DnsRecord[] => [],
+  driveChanges: () => ({ pageToken: "", driveId: "", lastSuccessAt: "" }),
+  migration: () => ({ startedAt: "" }),
 };
 
 type Key = keyof typeof DEFAULTS;

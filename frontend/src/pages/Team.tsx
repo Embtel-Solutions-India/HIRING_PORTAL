@@ -1,4 +1,4 @@
-import { Check, ClipboardCheck, Crown, Mail, MoreHorizontal, Shield, ShieldCheck, UserPlus, X } from "lucide-react";
+import { Check, ClipboardCheck, Crown, Mail, MoreHorizontal, Shield, ShieldCheck, Trash2, UserPlus, X } from "lucide-react";
 import { Fragment, useState, type ReactNode } from "react";
 import { Avatar, Badge, Button, CalendarMark, Field, IconButton, Menu, MenuItem, Modal, PageHeader, Select, Tabs } from "../components/ui";
 import { useCurrentUser, useStore } from "../data/store";
@@ -13,6 +13,7 @@ export default function Team() {
   const team = useStore((s) => s.team);
   const updateUser = useStore((s) => s.updateUser);
   const resendInvite = useStore((s) => s.resendInvite);
+  const deleteUser = useStore((s) => s.deleteUser);
   const toast = useStore((s) => s.toast);
   const [tab, setTab] = useState<"members" | "roles">("members");
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -60,13 +61,13 @@ export default function Team() {
       />
 
       {tab === "members" ? (
-        <div className="card overflow-hidden">
+        <div className="card">
           <ul className="divide-y divide-line">
             {team.map((m) => {
               const editable = m.id !== me.id && canManageRole(me.role, m.role);
               const lastSuper = m.role === "super_admin" && superAdmins <= 1;
               return (
-                <li key={m.id} className={cn("flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3", m.status === "deactivated" && "opacity-55")}>
+                <li key={m.id} className={cn("flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3", m.status === "deactivated" && "[&>*:not(:last-child)]:opacity-55")}>
                   <Avatar name={m.name} color={m.avatarColor} size={36} />
                   <div className="min-w-[180px] flex-1">
                     <p className="text-sm font-semibold">
@@ -140,6 +141,19 @@ export default function Team() {
                               }}
                             >
                               Deactivate
+                            </MenuItem>
+                          )}
+                          {can(me.role, "users.delete") && !m.protected && !(lastSuper && m.status === "active") && (
+                            <MenuItem
+                              danger
+                              icon={<Trash2 size={15} />}
+                              onClick={async () => {
+                                close();
+                                if (!confirm(`Delete ${m.name}? They lose access immediately. Their notes and feedback stay, but no longer show an author.`)) return;
+                                if (await deleteUser(m.id)) toast(`${m.name} deleted`);
+                              }}
+                            >
+                              Delete
                             </MenuItem>
                           )}
                         </>

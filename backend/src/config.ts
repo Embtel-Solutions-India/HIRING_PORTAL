@@ -14,6 +14,12 @@ function bool(name: string, fallback = false): boolean {
   return ["1", "true", "yes", "on"].includes(v.toLowerCase());
 }
 
+/** A number of at least 1; anything non-numeric falls back to the default. */
+export function positiveNumber(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return raw.trim() !== "" && Number.isFinite(n) ? Math.max(1, n) : fallback;
+}
+
 const nodeEnv = str("NODE_ENV", "development");
 const appUrl = str("APP_URL", "http://localhost:3000").replace(/\/$/, "");
 
@@ -50,7 +56,7 @@ export const config = {
       user: str("SMTP_USER"),
       pass: str("SMTP_PASS"),
     },
-    maxPerSecond: Math.max(1, Number(str("EMAIL_MAX_PER_SECOND", "5"))),
+    maxPerSecond: positiveNumber(str("EMAIL_MAX_PER_SECOND"), 5),
   },
 
   anthropicApiKey: str("ANTHROPIC_API_KEY"),
@@ -58,7 +64,17 @@ export const config = {
   /** Where resumes are kept when Google Drive isn't connected yet, and for local dev. */
   dataDir: path.resolve(str("DATA_DIR", path.join(here, "..", "data"))),
   frontendDist: path.resolve(str("FRONTEND_DIST", path.join(here, "..", "..", "frontend", "dist"))),
-  driveSyncMinutes: Math.max(1, Number(str("DRIVE_SYNC_MINUTES", "5"))),
+  driveSyncMinutes: positiveNumber(str("DRIVE_SYNC_MINUTES"), 5),
+
+  /** Primary resume storage. Empty = resumes stay in Drive / on disk as before. */
+  s3: {
+    region: str("AWS_REGION"),
+    bucket: str("S3_BUCKET"),
+    accessKeyId: str("AWS_ACCESS_KEY_ID"),
+    secretAccessKey: str("AWS_SECRET_ACCESS_KEY"),
+  },
+  /** Days a deleted resume's other copy is kept before it is removed. */
+  resumeDeleteGraceDays: positiveNumber(str("RESUME_DELETE_GRACE_DAYS"), 30),
 };
 
 export function assertConfig() {

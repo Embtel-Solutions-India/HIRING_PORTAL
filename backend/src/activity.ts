@@ -8,6 +8,7 @@ export type ActivityType =
   | "email_sent"
   | "user_invited"
   | "role_changed"
+  | "user_deleted"
   | "settings_changed"
   | "candidate_created"
   | "source_changed";

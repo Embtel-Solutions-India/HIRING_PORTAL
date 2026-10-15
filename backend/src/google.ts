@@ -122,6 +122,11 @@ export interface DriveFile {
   name: string;
   mimeType: string;
   size?: string;
+  md5Checksum?: string;
+  /** Increases on every change to the file (content or metadata). */
+  version?: string;
+  trashed?: boolean;
+  driveId?: string;
   modifiedTime?: string;
   webViewLink?: string;
   parents?: string[];
@@ -176,15 +181,16 @@ export async function listSubfolders(folderId: string): Promise<DriveFile[]> {
   return listQuery(`'${folderId}' in parents and mimeType = '${FOLDER}' and trashed = false`, "files(id,name)");
 }
 
-export async function uploadFile(folderId: string, name: string, mimeType: string, data: Buffer): Promise<DriveFile> {
+/** `id` (from generateFileId) makes the upload idempotent: a retry with the same id can't create a second file. */
+export async function uploadFile(folderId: string, name: string, mimeType: string, data: Buffer, id?: string): Promise<DriveFile> {
   const boundary = `hirely${Date.now().toString(36)}`;
-  const meta = JSON.stringify({ name, parents: [folderId], mimeType });
+  const meta = JSON.stringify({ ...(id ? { id } : {}), name, parents: [folderId], mimeType });
   const body = Buffer.concat([
     Buffer.from(`--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\ncontent-type: ${mimeType}\r\n\r\n`),
     data,
     Buffer.from(`\r\n--${boundary}--`),
   ]);
-  const res = await gfetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,size,webViewLink`, {
+  const res = await gfetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,size,md5Checksum,version,webViewLink`, {
     method: "POST",
     headers: { "content-type": `multipart/related; boundary=${boundary}` },
     body,
@@ -193,7 +199,7 @@ export async function uploadFile(folderId: string, name: string, mimeType: strin
 }
 
 export async function getFileMeta(fileId: string): Promise<DriveFile> {
-  const res = await gfetch(`${DRIVE}/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=id,name,mimeType,size,modifiedTime,webViewLink,parents`);
+  const res = await gfetch(`${DRIVE}/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=id,name,mimeType,size,md5Checksum,version,trashed,driveId,modifiedTime,webViewLink,parents`);
   return (await res.json()) as DriveFile;
 }
 
@@ -215,6 +221,51 @@ export async function moveFile(fileId: string, toFolderId: string) {
     headers: { "content-type": "application/json" },
     body: "{}",
   });
+}
+
+export async function generateFileId(): Promise<string> {
+  const res = await gfetch(`${DRIVE}/files/generateIds?count=1&space=drive&type=files`);
+  return ((await res.json()) as { ids: string[] }).ids[0]!;
+}
+
+/** Uploads new content as a new revision of the same file (same id, same links). */
+export async function updateFileContent(fileId: string, mimeType: string, data: Buffer): Promise<void> {
+  await gfetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media&supportsAllDrives=true`, {
+    method: "PATCH",
+    headers: { "content-type": mimeType },
+    body: data,
+  });
+}
+
+async function patchMeta(fileId: string, body: object) {
+  await gfetch(`${DRIVE}/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+export const renameFile = (fileId: string, name: string) => patchMeta(fileId, { name });
+export const setTrashed = (fileId: string, trashed: boolean) => patchMeta(fileId, { trashed });
+
+export interface DriveChange {
+  fileId: string;
+  removed: boolean;
+  file?: DriveFile;
+}
+
+const driveParam = (driveId: string) => (driveId ? `&driveId=${encodeURIComponent(driveId)}` : "");
+
+export async function getStartPageToken(driveId: string): Promise<string> {
+  const res = await gfetch(`${DRIVE}/changes/startPageToken?supportsAllDrives=true${driveParam(driveId)}`);
+  return ((await res.json()) as { startPageToken: string }).startPageToken;
+}
+
+export async function listChanges(pageToken: string, driveId: string) {
+  const fields = "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,size,md5Checksum,version,trashed,parents))";
+  const res = await gfetch(
+    `${DRIVE}/changes?pageToken=${encodeURIComponent(pageToken)}&pageSize=1000&includeRemoved=true&${common}${driveParam(driveId)}&fields=${encodeURIComponent(fields)}`,
+  );
+  return (await res.json()) as { changes: DriveChange[]; nextPageToken?: string; newStartPageToken?: string };
 }
 
 // ---------- Calendar ----------
