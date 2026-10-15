@@ -7,6 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "check:sync": "node scripts/check-sync.ts",
     "dev": "node --watch --env-file-if-exists=.env src/index.ts",
     "start": "node src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
