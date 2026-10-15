@@ -134,7 +134,7 @@ export default function CandidateDetail() {
                     icon={<Trash2 size={15} />}
                     onClick={() => {
                       close();
-                      if (confirm(`Delete ${fullName(c)}? The resume stays in Google Drive.`)) {
+                      if (confirm(`Delete ${fullName(c)}? Their resume is kept for 30 days and can be restored by an Admin.`)) {
                         deleteCandidates([c.id]);
                         toast("Candidate deleted");
                         navigate("/candidates");

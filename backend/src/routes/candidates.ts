@@ -4,11 +4,12 @@ import { can } from "../../../frontend/src/lib/permissions.ts";
 import type { ResumeFile } from "../../../frontend/src/types.ts";
 import { logActivity } from "../activity.ts";
 import { prisma } from "../db.ts";
+import { config } from "../config.ts";
 import { createCampaign } from "../email.ts";
 import * as google from "../google.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
 import { createCandidate, enqueueParse } from "../pipeline.ts";
-import { renameInS3, syncCandidateResume } from "../resume-files.ts";
+import { graceDate, renameInS3, syncCandidateResume } from "../resume-files.ts";
 import { docxToHtml } from "../resume.ts";
 import * as s3 from "../s3.ts";
 import { mimeFor, readResume, storeResume } from "../storage.ts";
@@ -95,8 +96,13 @@ export default async function candidateRoutes(app: FastifyInstance) {
   app.post("/api/candidates/delete", async (req) => {
     const user = requirePerm(req, "candidates.delete");
     const { ids } = z.object({ ids: z.array(z.string().uuid()).min(1) }).parse(req.body);
+    // Their resumes stay in S3 and Drive for the grace period; an Admin can restore them from Settings → Resume sync.
+    await prisma.resume_files.updateMany({
+      where: { candidate_id: { in: ids }, state: { not: "deleted" } },
+      data: { state: "pending_deletion", deleted_side: "portal", delete_after: graceDate(), updated_at: new Date() },
+    });
     const { count } = await prisma.candidates.deleteMany({ where: { id: { in: ids } } });
-    await logActivity(user.id, "settings_changed", `deleted ${count} candidate${count === 1 ? "" : "s"} (resumes kept in Drive)`);
+    await logActivity(user.id, "settings_changed", `deleted ${count} candidate${count === 1 ? "" : "s"} (resumes kept ${config.resumeDeleteGraceDays} days)`);
     return { deleted: count };
   });
 

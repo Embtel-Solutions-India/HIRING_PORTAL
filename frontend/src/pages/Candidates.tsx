@@ -202,7 +202,7 @@ export default function Candidates() {
                 className="text-rose-300 hover:bg-white/10 hover:text-rose-200"
                 icon={<Trash2 size={14} />}
                 onClick={() => {
-                  if (confirm(`Delete ${selected.length} candidates? Resumes stay in Google Drive.`)) {
+                  if (confirm(`Delete ${selected.length} candidates? Their resumes are kept for 30 days and can be restored by an Admin.`)) {
                     deleteCandidates(selected);
                     toast(`${selected.length} candidates deleted`);
                     setSelected([]);

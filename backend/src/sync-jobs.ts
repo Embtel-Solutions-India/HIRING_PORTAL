@@ -181,6 +181,8 @@ export async function runJob(job: JobRow) {
       return renameS3(job, row);
     case "stash_conflict":
       return stashConflict(job, row);
+    case "purge":
+      return purge(job, row);
     case "to_drive":
       return toDrive(job, row);
     case "rename_drive":
@@ -228,5 +230,22 @@ async function doTick() {
   }
 }
 
-/** Placeholder until Task 8 adds purge handling. */
-async function enqueueDuePurges() {}
+async function enqueueDuePurges() {
+  const due = await prisma.resume_files.findMany({ where: { state: "pending_deletion", delete_after: { lte: new Date() } }, select: { id: true } });
+  for (const r of due) await enqueue(r.id, "purge");
+}
+
+/** End of the grace period: the only automatic deletion. S3 keeps a noncurrent version; Drive keeps the file in trash. */
+async function purge(job: JobRow, row: ResumeFileRow) {
+  if (row.state !== "pending_deletion" || !row.delete_after || row.delete_after > new Date()) return complete(job.id, prisma, "skipped: restored or not due");
+  if (row.s3_key) await s3.remove(row.s3_key);
+  if (row.deleted_side === "portal" && row.drive_file_id && (await google.isConnected())) {
+    await google.setTrashed(row.drive_file_id, true).catch((e) => {
+      if (e?.status !== 404) throw e;
+    });
+  }
+  await prisma.$transaction(async (tx) => {
+    await tx.resume_files.update({ where: { id: row.id }, data: { state: "deleted", updated_at: new Date() } });
+    await complete(job.id, tx);
+  });
+}
