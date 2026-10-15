@@ -161,6 +161,36 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Their notes, feedback, jobs and campaigns stay; the user FKs are ON DELETE SET NULL, sessions cascade.
+  app.delete("/api/users/:id", async (req) => {
+    const actor = requirePerm(req, "users.delete");
+    const { id } = req.params as { id: string };
+    const target = isUuid(id) ? ((await prisma.users.findUnique({ where: { id } })) as UserRow | null) : null;
+    if (!target) throw new HttpError(404, "Not found");
+    if (target.id === actor.id) throw new HttpError(400, "You can't delete your own account");
+    if (target.email === config.superAdminEmail) throw new HttpError(400, "This is the account set in SUPER_ADMIN_EMAIL — change that setting first");
+    // Don't leave upcoming interviews or booking links with nobody on them.
+    const [soloInterviews, soloLinks] = await Promise.all([
+      prisma.interviews.count({ where: { status: "scheduled", start_at: { gt: new Date() }, interviewer_ids: { equals: [id] } } }),
+      prisma.booking_links.findMany({ where: { host_ids: { equals: [id] } }, select: { title: true } }),
+    ]);
+    const blockers = [
+      soloInterviews && `${soloInterviews} upcoming interview${soloInterviews === 1 ? "" : "s"}`,
+      soloLinks.length && `booking link${soloLinks.length === 1 ? "" : "s"} ${soloLinks.map((l) => `“${l.title}”`).join(", ")}`,
+    ].filter(Boolean);
+    if (blockers.length) throw new HttpError(409, `${target.name} is the only person on ${blockers.join(" and ")} — reassign first`);
+    await prisma.$transaction(async (tx) => {
+      // Lock the active Super Admins so two admins deleting each other can't both pass the check.
+      const supers = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM users WHERE role = 'super_admin' AND status = 'active' FOR UPDATE`;
+      if (supers.some((s) => s.id === id) && supers.length <= 1) throw new HttpError(400, "There must always be at least one Super Admin");
+      await tx.$executeRaw`UPDATE booking_links SET host_ids = array_remove(host_ids, ${id}::uuid) WHERE ${id}::uuid = ANY(host_ids)`;
+      await tx.$executeRaw`UPDATE interviews SET interviewer_ids = array_remove(interviewer_ids, ${id}::uuid) WHERE ${id}::uuid = ANY(interviewer_ids)`;
+      await tx.users.delete({ where: { id } });
+    });
+    await logActivity(actor.id, "user_deleted", `deleted ${target.name} (${target.email})`);
+    return { ok: true };
+  });
+
   // ---------- booking links ----------
 
   app.put("/api/booking-links/:id", async (req) => {

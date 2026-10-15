@@ -28,6 +28,7 @@ export const user = (u: UserRow, orgDomain = ""): TeamMember => ({
   avatarColor: u.avatar_color,
   lastActiveAt: u.last_active_at?.toISOString(),
   calendarConnected: !!orgDomain && u.email.endsWith(`@${orgDomain}`),
+  protected: u.email === config.superAdminEmail || undefined,
 });
 
 export const stage = (s: Row): Stage => ({

@@ -220,12 +220,14 @@ export default function CandidateDetail() {
                   {c.notes.length === 0 && <p className="py-4 text-center text-sm text-muted">No notes yet</p>}
                   {c.notes.map((n) => {
                     const a = teamMap[n.authorId];
+                    // No author = written on the booking page, or by a since-deleted member.
+                    const fromBooking = !a && n.body.startsWith("Booking note from candidate:");
                     return (
                       <div key={n.id} className="flex gap-3">
-                        <Avatar name={a?.name ?? "Booking page"} color={a?.avatarColor} size={28} />
+                        <Avatar name={a?.name ?? (fromBooking ? "Booking page" : "Deleted user")} color={a?.avatarColor} size={28} />
                         <div className="min-w-0 flex-1">
                           <p className="text-[13px]">
-                            <b className="font-semibold">{a?.name ?? "From the booking page"}</b> <span className="text-xs text-faint">· {timeAgo(n.createdAt)}</span>
+                            <b className="font-semibold">{a?.name ?? (fromBooking ? "From the booking page" : "Deleted user")}</b> <span className="text-xs text-faint">· {timeAgo(n.createdAt)}</span>
                           </p>
                           <p className="mt-0.5 text-[13.5px] leading-relaxed text-ink-2">{n.body}</p>
                         </div>

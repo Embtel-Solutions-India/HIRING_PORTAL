@@ -102,6 +102,7 @@ interface Actions {
   inviteUser: (input: { name: string; email: string; role: Role; title: string }) => Promise<{ emailError?: string } | null>;
   updateUser: (id: string, patch: Partial<Pick<TeamMember, "role" | "status" | "title" | "name">>) => Promise<boolean>;
   resendInvite: (id: string) => Promise<boolean>;
+  deleteUser: (id: string) => Promise<boolean>;
 
   setStages: (stages: Stage[]) => Promise<boolean>;
   updateSettings: (patch: Partial<Omit<OrgSettings, "google" | "dnsRecords" | "system">> & { google?: Partial<OrgSettings["google"]> }) => Promise<boolean>;
@@ -335,6 +336,11 @@ export const useStore = create<Store>()((set, get) => {
       return ok("Couldn't update", () => api.patch(`/api/users/${id}`, patch));
     },
     resendInvite: (id) => ok("Couldn't resend", () => api.post(`/api/users/${id}/resend-invite`)),
+    deleteUser: async (id) => {
+      const done = await ok("Couldn't delete", () => api.del(`/api/users/${id}`));
+      if (done) set((s) => ({ team: s.team.filter((u) => u.id !== id) }));
+      return done;
+    },
     setStages: (stages) => {
       set({ stages });
       return ok("Couldn't save stages", () => api.put("/api/settings/stages", stages));

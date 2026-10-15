@@ -655,6 +655,7 @@ const AUDIT_TYPES: { value: ActivityEvent["type"] | "all"; label: string }[] = [
   { value: "resume_upload", label: "Resumes" },
   { value: "user_invited", label: "Invites" },
   { value: "role_changed", label: "Role changes" },
+  { value: "user_deleted", label: "Deleted members" },
   { value: "source_changed", label: "Source tags" },
   { value: "settings_changed", label: "Settings" },
 ];

@@ -12,6 +12,8 @@ export interface TeamMember {
   avatarColor: string;
   lastActiveAt?: string;
   calendarConnected: boolean;
+  /** The SUPER_ADMIN_EMAIL account: can't be demoted, deactivated or deleted. */
+  protected?: boolean;
 }
 
 export interface Stage {
@@ -177,6 +179,7 @@ export interface ActivityEvent {
     | "email_sent"
     | "user_invited"
     | "role_changed"
+    | "user_deleted"
     | "settings_changed"
     | "candidate_created"
     | "source_changed";
