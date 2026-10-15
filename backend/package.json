@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "dev:db": "node scripts/dev-db.ts",
     "seed:demo": "node --env-file-if-exists=.env scripts/seed-demo.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "check:sync-db": "node scripts/check-sync-db.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

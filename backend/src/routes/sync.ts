@@ -8,6 +8,7 @@ import { startMigration } from "../resume-files.ts";
 import { s3Configured } from "../s3.ts";
 import { getSetting } from "../settings.ts";
 import { enqueue, retryRow } from "../sync-queue.ts";
+import { resolveConflict } from "../sync-jobs.ts";
 
 const STATES = ["pending", "synced", "conflict", "failed", "pending_deletion", "deleted"] as const;
 
@@ -72,17 +73,14 @@ export default async function syncRoutes(app: FastifyInstance) {
     const user = requirePerm(req, "storage.manage");
     const { id, action } = z.object({ id: z.string(), action: z.enum(["retry", "keep-portal", "keep-drive", "restore", "delete-now", "reviewed"]) }).parse(req.params);
     const row = await rowFor(id);
-    const conflict = row.conflict as { on?: "content" | "name"; drive?: { name?: string } } | null;
     switch (action) {
       case "retry":
         await retryRow(row.id);
         break;
       case "keep-portal":
       case "keep-drive": {
-        if (row.state !== "conflict" || !conflict?.on) throw new HttpError(409, "This resume has no conflict");
         const portal = action === "keep-portal";
-        if (conflict.on === "content") await enqueue(row.id, portal ? "to_drive" : "to_s3", { resolve: true });
-        else await enqueue(row.id, portal ? "rename_drive" : "rename_s3", { name: portal ? row.file_name : conflict.drive?.name, resolve: true });
+        await resolveConflict(row, portal ? "portal" : "drive");
         await logActivity(user.id, "settings_changed", `resolved a resume conflict for ${row.file_name} (kept the ${portal ? "portal" : "Drive"} version)`);
         break;
       }

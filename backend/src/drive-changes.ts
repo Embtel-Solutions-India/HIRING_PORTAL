@@ -32,7 +32,18 @@ export async function pollDriveChanges(): Promise<{ applied: number }> {
   let token = st.pageToken;
   let next = "";
   for (;;) {
-    const page = await google.listChanges(token, st.driveId);
+    let page: Awaited<ReturnType<typeof google.listChanges>>;
+    try {
+      page = await google.listChanges(token, st.driveId);
+    } catch (e) {
+      if (token !== st.pageToken || !invalidToken(e)) throw e;
+      // The stored bookmark was rejected: start a fresh one and re-check every tracked resume from Drive.
+      console.warn("[drive-changes] page token rejected; starting a new checkpoint and re-checking all resumes");
+      await setSetting("driveChanges", { ...st, pageToken: await google.getStartPageToken(st.driveId) });
+      const rows = await prisma.resume_files.findMany({ where: { drive_file_id: { not: null }, state: { in: ["pending", "synced"] } }, select: { id: true } });
+      for (const r of rows) await enqueue(r.id, "to_s3");
+      return { applied: 0 };
+    }
     changes.push(...page.changes);
     if (page.nextPageToken) token = page.nextPageToken;
     else {
@@ -40,18 +51,32 @@ export async function pollDriveChanges(): Promise<{ applied: number }> {
       break;
     }
   }
-  let applied = 0;
-  for (const ch of changes) {
-    const row = await prisma.resume_files.findUnique({ where: { drive_file_id: ch.fileId } });
-    if (!row) continue;
-    await applyChange(row, ch);
-    applied++;
-  }
+  const applied = await applyChanges(changes);
   await patchSetting("driveChanges", { pageToken: next, lastSuccessAt: new Date().toISOString() });
   return { applied };
 }
 
-async function portalPending(resumeFileId: string): Promise<PortalPending> {
+const invalidToken = (e: unknown) => (e instanceof HttpError && e.status === 404) || /Google API error \((400|410)\)/.test((e as Error)?.message ?? "");
+
+/** Applies changes to tracked resumes. A change that keeps failing is recorded on its row instead of stalling the whole feed. */
+export async function applyChanges(changes: google.DriveChange[]): Promise<number> {
+  let applied = 0;
+  for (const ch of changes) {
+    const row = await prisma.resume_files.findUnique({ where: { drive_file_id: ch.fileId } });
+    if (!row) continue;
+    applied++;
+    try {
+      await applyChange(row, ch);
+    } catch (e) {
+      const message = `Couldn't apply a Drive change: ${(e instanceof Error ? e.message : String(e)).slice(0, 400)}`;
+      console.warn(`[drive-changes] ${row.id}: ${message}`);
+      await prisma.resume_files.update({ where: { id: row.id }, data: { state: "failed", last_error: message, updated_at: new Date() } });
+    }
+  }
+  return applied;
+}
+
+export async function portalPending(resumeFileId: string): Promise<PortalPending> {
   const jobs = await prisma.sync_jobs.findMany({
     where: { resume_file_id: resumeFileId, kind: { in: ["to_drive", "rename_drive"] }, status: { in: ["queued", "running", "failed"] } },
     orderBy: { created_at: "desc" },
@@ -65,17 +90,26 @@ async function portalPending(resumeFileId: string): Promise<PortalPending> {
   };
 }
 
-async function flagConflict(row: ResumeFileRow, obs: DriveObservation, on: "content" | "name") {
+type ConflictOn = "content" | "name" | "both";
+
+/**
+ * Freezes the resume until an Admin picks a side. A second conflict of the other kind widens `on` to "both";
+ * `drive` is the Drive side as observed (null when the conflict was found by the worker, not the change feed).
+ */
+export async function flagConflict(row: ResumeFileRow, drive: { md5: string | null; version: string | null; name: string } | null, on: "content" | "name") {
   const now = new Date();
+  const prev = (await prisma.resume_files.findUnique({ where: { id: row.id }, select: { state: true, conflict: true } }))!;
+  const old = prev.state === "conflict" ? (prev.conflict as { on?: ConflictOn; drive?: object; detectedAt?: string } | null) : null;
+  const merged: ConflictOn = old?.on && old.on !== on ? "both" : on;
   await prisma.$transaction([
     prisma.resume_files.update({
       where: { id: row.id },
       data: {
         state: "conflict",
         conflict: {
-          on,
-          detectedAt: now.toISOString(),
-          drive: { md5: obs.md5, version: obs.version, name: obs.name },
+          on: merged,
+          detectedAt: old?.detectedAt ?? now.toISOString(),
+          drive: { ...(old?.drive ?? {}), ...(drive ?? {}) },
           s3: { sha256: row.sha256, key: row.s3_key, versionId: row.s3_version_id, name: row.file_name },
         } as Prisma.InputJsonValue,
         updated_at: now,
@@ -110,7 +144,7 @@ export async function applyChange(row: ResumeFileRow, ch: google.DriveChange) {
   for (const d of decisions) {
     if (d.do === "copy_to_s3") await enqueue(row.id, "to_s3");
     else if (d.do === "rename_s3") await enqueue(row.id, "rename_s3", { name: d.name });
-    else if (d.do === "conflict") await flagConflict(row, obs, d.on);
+    else if (d.do === "conflict") await flagConflict(row, { md5: obs.md5, version: obs.version, name: obs.name }, d.on);
     else if (d.do === "start_deletion") await startDeletion(row.id, "drive");
     else if (d.do === "cancel_deletion")
       await prisma.resume_files.update({ where: { id: row.id }, data: { state: "synced", delete_after: null, deleted_side: null, updated_at: new Date() } });

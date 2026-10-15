@@ -24,7 +24,7 @@ interface SyncItem {
   fileName: string;
   state: SyncStateName;
   lastError: string | null;
-  conflict: { on?: "content" | "name"; drive?: { name?: string }; s3?: { name?: string } } | null;
+  conflict: { on?: "content" | "name" | "both"; drive?: { name?: string }; s3?: { name?: string } } | null;
   deleteAfter: string | null;
   deletedSide: "drive" | "portal" | null;
   reviewReason: string | null;
@@ -128,12 +128,12 @@ export default function ResumeSync() {
                 <p className="text-xs text-muted">
                   {it.candidateName} · updated {timeAgo(it.updatedAt)}
                 </p>
-                {it.state === "conflict" && it.conflict?.on === "name" && (
+                {it.state === "conflict" && it.conflict?.on !== "content" && (
                   <p className="mt-1 text-xs text-ink-2">
-                    Portal name “{it.conflict.s3?.name}” vs Drive name “{it.conflict.drive?.name}”
+                    Portal name “{it.conflict?.s3?.name}” vs Drive name “{it.conflict?.drive?.name}”
                   </p>
                 )}
-                {it.state === "conflict" && it.conflict?.on === "content" && <p className="mt-1 text-xs text-ink-2">Changed in both the portal and Drive. Both versions are kept.</p>}
+                {it.state === "conflict" && it.conflict?.on !== "name" && <p className="mt-1 text-xs text-ink-2">Changed in both the portal and Drive. Both versions are kept.</p>}
                 {it.lastError && (
                   <p className="mt-1 text-xs text-danger">
                     <AlertTriangle size={12} className="mr-1 inline" />

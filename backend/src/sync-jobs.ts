@@ -3,8 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
-import { pollDriveChanges } from "./drive-changes.ts";
+import { flagConflict, pollDriveChanges, portalPending } from "./drive-changes.ts";
 import * as google from "./google.ts";
+import { HttpError } from "./http.ts";
 import { registerDriveFile, renameInS3, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
 import * as s3 from "./s3.ts";
 import { driveFolderFor } from "./storage.ts";
@@ -25,6 +26,11 @@ async function putVerified(key: string, data: Buffer, mimeType: string, sha256: 
 /** Drive (or server disk) → S3. Switches the candidate to S3 only after the copy is verified. */
 async function toS3(job: JobRow, row: ResumeFileRow) {
   if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
+  if (!job.payload.resolve && row.drive_file_id && (await portalPending(row.id)).contentQueued) {
+    // Drive changed and the portal has a newer version waiting to go to Drive: don't overwrite either.
+    await flagConflict(row, null, "content");
+    return complete(job.id, prisma, "conflict: changed in the portal too");
+  }
   let data: Buffer;
   let baseline: { drive_md5: string | null; drive_version: string | null; drive_name: string } | null = null;
   if (row.drive_file_id) {
@@ -48,11 +54,13 @@ async function toS3(job: JobRow, row: ResumeFileRow) {
     versionId = await putVerified(key, data, s3MimeFor(row.mime_type), sha256);
   }
   await prisma.$transaction(async (tx) => {
-    const updated = await tx.resume_files.update({
-      where: { id: row.id },
+    // Only if the portal didn't replace or rename the resume while we were copying; otherwise retry and re-check.
+    const { count } = await tx.resume_files.updateMany({
+      where: { id: row.id, s3_version_id: row.s3_version_id, s3_key: row.s3_key, file_name: row.file_name },
       data: { s3_key: key, s3_version_id: versionId, sha256, size_bytes: data.length, ...(baseline ?? {}), state: "synced", conflict: Prisma.DbNull, last_synced_at: new Date(), last_error: null, updated_at: new Date() },
     });
-    await syncCandidateResume(tx, updated);
+    if (!count) throw new Error("The resume changed in the portal during the copy; will re-check");
+    await syncCandidateResume(tx, await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } }));
     await complete(job.id, tx);
   });
   if (row.local_path && !row.drive_file_id && (await google.isConnected())) await enqueue(row.id, "to_drive");
@@ -107,22 +115,21 @@ async function toDrive(job: JobRow, row: ResumeFileRow) {
   const meta = await google.getFileMeta(fileId);
   if (Number(meta.size) !== data.length || meta.md5Checksum !== md5) throw new ChecksumMismatch("Drive upload");
   await prisma.$transaction(async (tx) => {
-    const updated = await tx.resume_files.update({
-      where: { id: row.id },
+    // The Drive baseline is always what we just pushed, so its echo is recognised...
+    await tx.resume_files.update({ where: { id: row.id }, data: { drive_file_id: fileId, drive_md5: md5, drive_version: meta.version ?? null, drive_name: meta.name, updated_at: new Date() } });
+    // ...but the row is only "synced" if the portal hasn't moved on since (a newer to_drive is then already queued).
+    await tx.resume_files.updateMany({
+      where: { id: row.id, s3_version_id: row.s3_version_id },
       data: {
-        drive_file_id: fileId,
-        drive_md5: md5,
-        drive_version: meta.version ?? null,
-        drive_name: meta.name,
-        mime_type: meta.mimeType === GOOGLE_DOC ? row.mime_type : meta.mimeType,
+        // A replaced Google Doc is now a real file of the S3 type. Otherwise the type is ours, never Drive's.
+        ...(current?.mimeType === GOOGLE_DOC ? { mime_type: mimeType } : {}),
         state: "synced",
         ...(job.payload.resolve ? { conflict: Prisma.DbNull } : {}),
         last_synced_at: new Date(),
         last_error: null,
-        updated_at: new Date(),
       },
     });
-    await syncCandidateResume(tx, updated);
+    await syncCandidateResume(tx, await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } }));
     await complete(job.id, tx);
   });
 }
@@ -147,6 +154,14 @@ async function renameDrive(job: JobRow, row: ResumeFileRow) {
 async function renameS3(job: JobRow, row: ResumeFileRow) {
   if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
   const name = String(job.payload.name);
+  if (!job.payload.resolve) {
+    const pending = await portalPending(row.id);
+    if (pending.renameTo !== null && pending.renameTo !== name) {
+      // Renamed on both sides: applying both would swap the names.
+      await flagConflict(row, { md5: row.drive_md5, version: row.drive_version, name }, "name");
+      return complete(job.id, prisma, "conflict: renamed in the portal too");
+    }
+  }
   await renameInS3(row, name, { drive_name: name });
   if (job.payload.resolve) {
     await prisma.resume_files.update({ where: { id: row.id }, data: { state: "synced", conflict: Prisma.DbNull, updated_at: new Date() } });
@@ -158,8 +173,14 @@ async function renameS3(job: JobRow, row: ResumeFileRow) {
 async function stashConflict(job: JobRow, row: ResumeFileRow) {
   const conflict = row.conflict as { drive?: { stashKey?: string; name?: string } } | null;
   if (row.state !== "conflict" || !row.drive_file_id || conflict?.drive?.stashKey) return complete(job.id, prisma, "skipped");
-  const meta = await google.getFileMeta(row.drive_file_id);
-  const { data } = await google.downloadFile(row.drive_file_id, meta.mimeType);
+  await stashDrive(row);
+  await complete(job.id);
+}
+
+/** Saves Drive's current version of the file under conflicts/ in S3 and records the key on the conflict. */
+async function stashDrive(row: ResumeFileRow) {
+  const meta = await google.getFileMeta(row.drive_file_id!);
+  const { data } = await google.downloadFile(row.drive_file_id!, meta.mimeType);
   const { sha256 } = digest(data);
   const key = `conflicts/${row.id}/${Date.now()}-${safeKeyName(s3NameFor(meta.name, meta.mimeType))}`;
   await putVerified(key, data, s3MimeFor(meta.mimeType), sha256);
@@ -167,8 +188,24 @@ async function stashConflict(job: JobRow, row: ResumeFileRow) {
     const fresh = await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } });
     const c = (fresh.conflict ?? {}) as Record<string, any>;
     await tx.resume_files.update({ where: { id: row.id }, data: { conflict: { ...c, drive: { ...c.drive, stashKey: key } } as Prisma.InputJsonValue } });
-    await complete(job.id, tx);
   });
+}
+
+/**
+ * An Admin picked a side. Content and name are both re-pushed from that side (each is a no-op when already equal),
+ * so nothing the conflict cancelled is left behind. Keeping the portal first saves Drive's current version to S3.
+ */
+export async function resolveConflict(row: ResumeFileRow, side: "portal" | "drive") {
+  if (row.state !== "conflict") throw new HttpError(409, "This resume has no conflict");
+  const c = row.conflict as { on?: string; drive?: { name?: string } } | null;
+  if (side === "portal") {
+    if (c?.on !== "name" && row.drive_file_id) await stashDrive(row);
+    await enqueue(row.id, "to_drive", { resolve: true });
+    await enqueue(row.id, "rename_drive", { name: row.file_name, resolve: true });
+  } else {
+    await enqueue(row.id, "to_s3", { resolve: true });
+    if (c?.drive?.name) await enqueue(row.id, "rename_s3", { name: c.drive.name, resolve: true });
+  }
 }
 
 export async function runJob(job: JobRow) {
@@ -194,7 +231,7 @@ export async function runJob(job: JobRow) {
 
 let running: Promise<void> | null = null;
 let lastPoll = 0;
-let lastPurgeScan = 0;
+let lastHourly = 0;
 let started = false;
 
 /** One pass of the worker. Jobs and Drive polling never overlap, so a change can't race a half-finished transfer. */
@@ -224,15 +261,23 @@ async function doTick() {
     lastPoll = Date.now();
     await pollDriveChanges();
   }
-  if (Date.now() - lastPurgeScan >= 3_600_000) {
-    lastPurgeScan = Date.now();
-    await enqueueDuePurges();
+  if (Date.now() - lastHourly >= 3_600_000) {
+    lastHourly = Date.now();
+    await hourlyScan();
   }
 }
 
-async function enqueueDuePurges() {
+async function hourlyScan() {
   const due = await prisma.resume_files.findMany({ where: { state: "pending_deletion", delete_after: { lte: new Date() } }, select: { id: true } });
   for (const r of due) await enqueue(r.id, "purge");
+  // Resumes stored while Drive was disconnected get their Drive copy once it is connected.
+  if (await google.isConnected()) {
+    const noDrive = await prisma.resume_files.findMany({
+      where: { drive_file_id: null, s3_key: { not: null }, state: { in: ["pending", "synced"] }, sync_jobs: { none: { kind: "to_drive", status: { in: ["queued", "running"] } } } },
+      select: { id: true },
+    });
+    for (const r of noDrive) await enqueue(r.id, "to_drive");
+  }
 }
 
 /** End of the grace period: the only automatic deletion. S3 keeps a noncurrent version; Drive keeps the file in trash. */
