@@ -1,6 +1,7 @@
 // Run: npm run check:sync — assert-based checks of the pure resume-sync rules.
 import assert from "node:assert/strict";
-import { positiveNumber } from "../src/config.ts";
+import { config, positiveNumber } from "../src/config.ts";
+import { s3Configured } from "../src/s3.ts";
 import { backoffMs, ChecksumMismatch, decide, GOOGLE_DOC, isPermanent, keyPrefix, nameBaseline, resolveFileName, s3KeyFor, safeKeyName, type Baseline, type DriveObservation, type PortalPending } from "../src/sync-rules.ts";
 
 const PDF = "application/pdf";
@@ -66,5 +67,13 @@ assert.equal(positiveNumber("abc", 30), 30, "non-numeric → default");
 assert.equal(positiveNumber("", 30), 30);
 assert.equal(positiveNumber("0", 30), 1, "clamped to at least 1");
 assert.equal(positiveNumber("7", 30), 7);
+
+// --- S3 needs only a region and a bucket (keys are optional: EC2 instance role) ---
+const s3Was = { ...config.s3 };
+Object.assign(config.s3, { region: "ap-south-1", bucket: "b", accessKeyId: "", secretAccessKey: "" });
+assert.equal(s3Configured(), true, "region + bucket is enough");
+Object.assign(config.s3, { bucket: "" });
+assert.equal(s3Configured(), false, "no bucket → off");
+Object.assign(config.s3, s3Was);
 
 console.log("check-sync: all assertions passed");

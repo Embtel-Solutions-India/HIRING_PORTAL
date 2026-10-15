@@ -5,10 +5,14 @@ import { ChecksumMismatch, digest } from "./sync-rules.ts";
 
 let client: S3Client | null = null;
 const s3 = () =>
-  (client ??= new S3Client({ region: config.s3.region, credentials: { accessKeyId: config.s3.accessKeyId, secretAccessKey: config.s3.secretAccessKey } }));
+  (client ??= new S3Client({
+    region: config.s3.region,
+    // Access keys only when both are set; otherwise the SDK's default chain (e.g. the EC2 instance's IAM role).
+    credentials: config.s3.accessKeyId && config.s3.secretAccessKey ? { accessKeyId: config.s3.accessKeyId, secretAccessKey: config.s3.secretAccessKey } : undefined,
+  }));
 const Bucket = () => config.s3.bucket;
 
-export const s3Configured = () => !!(config.s3.bucket && config.s3.region && config.s3.accessKeyId && config.s3.secretAccessKey);
+export const s3Configured = () => !!(config.s3.bucket && config.s3.region);
 
 export async function put(key: string, data: Buffer, mimeType: string, sha256: string): Promise<{ versionId: string }> {
   const res = await s3().send(new PutObjectCommand({ Bucket: Bucket(), Key: key, Body: data, ContentType: mimeType, Metadata: { sha256 } }));

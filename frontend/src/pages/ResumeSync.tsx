@@ -71,7 +71,7 @@ export default function ResumeSync() {
 
   if (!status) return <p className="text-sm text-muted">Loading…</p>;
   if (!status.s3Configured)
-    return <p className="text-sm text-muted">S3 isn't configured. Set AWS_REGION, S3_BUCKET, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY on the server (see DEPLOY.md), then restart it.</p>;
+    return <p className="text-sm text-muted">S3 isn't configured. Set AWS_REGION and S3_BUCKET on the server (see DEPLOY.md), then restart it.</p>;
 
   const tiles: [string, number | string][] = [
     ["Total resumes", status.total],
