@@ -5,6 +5,7 @@ import { Avatar, Badge, Button, CalendarMark, DriveMark, Field, GoogleMark, Page
 import { SOURCE_COLORS } from "../components/SourcePicker";
 import { useCan, useStore, useTeamMap } from "../data/store";
 import type { ActivityEvent, Stage } from "../types";
+import ResumeSync from "./ResumeSync";
 import { cn, fmtDate, timeAgo, uid } from "../lib/utils";
 
 const GOOGLE_RESULT: Record<string, [string, "success" | "error"]> = {
@@ -14,12 +15,13 @@ const GOOGLE_RESULT: Record<string, [string, "success" | "error"]> = {
   access_denied: ["Google connection was cancelled", "error"],
 };
 
-type SettingsTab = "integrations" | "email" | "pipeline" | "sources" | "audit";
+type SettingsTab = "integrations" | "email" | "pipeline" | "sources" | "audit" | "sync";
 
 export default function Settings() {
   const [params, setParams] = useSearchParams();
   const toast = useStore((s) => s.toast);
   const superAdmin = useCan("settings.integrations");
+  const canSync = useCan("storage.manage");
   const [tab, setTab] = useState<SettingsTab>(superAdmin ? "integrations" : "sources");
 
   useEffect(() => {
@@ -47,6 +49,7 @@ export default function Settings() {
               ] as const)
             : []),
           { value: "sources" as const, label: "Sources" },
+          ...(canSync ? [{ value: "sync" as const, label: "Resume sync" }] : []),
           ...(superAdmin ? [{ value: "audit" as const, label: "Audit log" }] : []),
         ]}
       />
@@ -55,6 +58,7 @@ export default function Settings() {
       {tab === "email" && <EmailDomain />}
       {tab === "pipeline" && <PipelineStages />}
       {tab === "audit" && <AuditLog />}
+      {tab === "sync" && <ResumeSync />}
     </>
   );
 }

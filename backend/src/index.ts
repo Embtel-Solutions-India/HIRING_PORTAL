@@ -19,6 +19,7 @@ import driveRoutes from "./routes/drive.ts";
 import interviewRoutes from "./routes/interviews.ts";
 import publicRoutes from "./routes/public.ts";
 import sourceRoutes from "./routes/sources.ts";
+import syncRoutes from "./routes/sync.ts";
 import { syncTick } from "./sync-jobs.ts";
 
 assertConfig();
@@ -62,6 +63,7 @@ await app.register(interviewRoutes);
 await app.register(adminRoutes);
 await app.register(driveRoutes);
 await app.register(sourceRoutes);
+await app.register(syncRoutes);
 await app.register(publicRoutes);
 
 // The built React app (frontend/dist), with client-side routing fallback to index.html.

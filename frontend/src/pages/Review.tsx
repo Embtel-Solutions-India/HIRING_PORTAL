@@ -23,7 +23,7 @@ const isTyping = (el: EventTarget | null) => {
 
 function prefetchResume(c: Candidate | undefined) {
   if (!c?.resume.driveFileId) return;
-  const url = resumeUrl(c.id, "preview");
+  const url = resumeUrl(c.id, "preview", c.resume.version);
   if (c.resume.mimeType.includes("wordprocessingml")) prefetchDocx(url);
   else if (c.resume.mimeType === "application/pdf" || c.resume.mimeType === "application/vnd.google-apps.document") prefetchPdf(url);
 }

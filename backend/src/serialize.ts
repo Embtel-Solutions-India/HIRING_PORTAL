@@ -94,7 +94,7 @@ export function candidate(c: Row, notes: Row[]): Candidate {
     rating: c.rating,
     tags: c.tags,
     skills: c.skills,
-    resume: c.resume ?? { storage: "local", driveFileId: "", fileName: "No resume", mimeType: "", sizeKb: 0, uploadedAt: c.created_at, uploadedById: "", driveUrl: "" },
+    resume: c.resume ? { ...c.resume, syncState: c.resume_files?.state } : { storage: "local", driveFileId: "", fileName: "No resume", mimeType: "", sizeKb: 0, uploadedAt: c.created_at, uploadedById: "", driveUrl: "" },
     experience: c.experience,
     education: c.education,
     summary,

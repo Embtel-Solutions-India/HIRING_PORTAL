@@ -22,6 +22,7 @@ export default async function bootstrapRoutes(app: FastifyInstance) {
       prisma.candidates.findMany({
         where: all ? {} : { interviews: { some: { interviewer_ids: { has: me.id } } } },
         orderBy: { applied_at: "desc" },
+        include: { resume_files: { select: { state: true } } },
       }),
       prisma.sources
         .findMany({ orderBy: { position: "asc" } })
