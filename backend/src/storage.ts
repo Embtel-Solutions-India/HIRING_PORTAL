@@ -51,9 +51,9 @@ export async function storeResume(input: { jobId: string | null; sourceName?: st
     const row = await prisma.resume_files.create({ data: { file_name: input.fileName, mime_type: mimeType, size_bytes: input.data.length } });
     try {
       const key = s3KeyFor(row.id, input.fileName, mimeType);
-      const { versionId } = await s3.put(key, input.data, mimeType, sha256);
-      const back = await s3.get(key, versionId);
-      if (back.length !== input.data.length || digest(back).sha256 !== sha256) throw new HttpError(502, "The upload to S3 couldn't be verified — try again");
+      const versionId = await s3.putVerified(key, input.data, mimeType, sha256).catch((e) => {
+        throw e?.name === "ChecksumMismatch" ? new HttpError(502, "The upload to S3 couldn't be verified — try again") : e;
+      });
       const saved = await prisma.resume_files.update({ where: { id: row.id }, data: { s3_key: key, s3_version_id: versionId, sha256 } });
       return resumeJson(saved, { uploadedAt: base.uploadedAt, uploadedById: input.uploadedById });
     } catch (e) {

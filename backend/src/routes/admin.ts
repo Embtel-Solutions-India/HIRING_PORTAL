@@ -170,9 +170,14 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (target.id === actor.id) throw new HttpError(400, "You can't delete your own account");
     if (target.email === config.superAdminEmail) throw new HttpError(400, "This is the account set in SUPER_ADMIN_EMAIL — change that setting first");
     await prisma.$transaction(async (tx) => {
-      // Lock the account first: interview booking share-locks its interviewers, so a booking in flight finishes
-      // before these checks run (and is counted), and later bookings see the account gone.
-      await tx.$queryRaw`SELECT id FROM users WHERE id = ${id}::uuid FOR UPDATE`;
+      // One lock statement, in id order, for the account and the active Super Admins: two deletes can't deadlock,
+      // and two admins deleting each other can't both pass the Super Admin check. Interview booking share-locks its
+      // interviewers, so a booking in flight finishes first (and is counted below), and later bookings see the account gone.
+      const locked = await tx.$queryRaw<{ id: string; super: boolean }[]>`
+        SELECT id, (role = 'super_admin' AND status = 'active') AS super FROM users
+        WHERE id = ${id}::uuid OR (role = 'super_admin' AND status = 'active') ORDER BY id FOR UPDATE`;
+      const supers = locked.filter((u) => u.super);
+      if (supers.some((s) => s.id === id) && supers.length <= 1) throw new HttpError(400, "There must always be at least one Super Admin");
       // Don't leave upcoming interviews or booking links with nobody on them.
       const [soloInterviews, soloLinks] = await Promise.all([
         tx.interviews.count({ where: { status: "scheduled", start_at: { gt: new Date() }, interviewer_ids: { equals: [id] } } }),
@@ -183,9 +188,6 @@ export default async function adminRoutes(app: FastifyInstance) {
         soloLinks.length && `booking link${soloLinks.length === 1 ? "" : "s"} ${soloLinks.map((l) => `“${l.title}”`).join(", ")}`,
       ].filter(Boolean);
       if (blockers.length) throw new HttpError(409, `${target.name} is the only person on ${blockers.join(" and ")} — reassign first`);
-      // Lock the active Super Admins so two admins deleting each other can't both pass the check.
-      const supers = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM users WHERE role = 'super_admin' AND status = 'active' FOR UPDATE`;
-      if (supers.some((s) => s.id === id) && supers.length <= 1) throw new HttpError(400, "There must always be at least one Super Admin");
       await tx.$executeRaw`UPDATE booking_links SET host_ids = array_remove(host_ids, ${id}::uuid) WHERE ${id}::uuid = ANY(host_ids)`;
       await tx.$executeRaw`UPDATE interviews SET interviewer_ids = array_remove(interviewer_ids, ${id}::uuid) WHERE ${id}::uuid = ANY(interviewer_ids)`;
       await tx.users.delete({ where: { id } });

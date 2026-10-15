@@ -254,6 +254,23 @@ const runOne = async (id: string, kind: string) => {
   console.log("P5 ok");
 }
 
+// P4: restoring a resume that only ever lived on the server's disk keeps pointing at that file.
+{
+  await clearQueue();
+  const lp = "00000000-0000-0000-0000-0000000000p4";
+  await prisma.resume_files.deleteMany({ where: { local_path: lp } });
+  const r = await mk({ drive_file_id: null, drive_md5: null, drive_name: null, s3_key: null, sha256: null, s3_version_id: null, local_path: lp, state: "pending_deletion", deleted_side: "portal", delete_after: new Date(Date.now() + 86_400_000) });
+  await restoreResume(r, null);
+  const after = await fresh(r.id);
+  const cand = await prisma.candidates.findUniqueOrThrow({ where: { id: after.candidate_id! } });
+  const resume = cand.resume as { storage?: string; driveFileId?: string };
+  assert.equal(resume.storage, "local", "P4: still a local file");
+  assert.equal(resume.driveFileId, lp, "P4: points at the file on disk");
+  await prisma.resume_files.delete({ where: { id: r.id } });
+  await prisma.candidates.delete({ where: { id: cand.id } });
+  console.log("P4 ok");
+}
+
 await prisma.resume_files.deleteMany({ where: { drive_file_id: { startsWith: PREFIX } } });
 await prisma.resume_files.deleteMany({ where: { drive_file_id: null, file_name: "cv.pdf", s3_key: { startsWith: `resumes/${PREFIX}` } } });
 console.log("check-sync-db: all assertions passed");

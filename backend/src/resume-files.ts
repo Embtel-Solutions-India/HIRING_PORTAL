@@ -9,7 +9,7 @@ import { createCandidate } from "./pipeline.ts";
 import * as s3 from "./s3.ts";
 import { patchSetting } from "./settings.ts";
 import { enqueue, type Db } from "./sync-queue.ts";
-import { ChecksumMismatch, resolveFileName, s3MimeFor, s3NameFor, safeKeyName } from "./sync-rules.ts";
+import { ChecksumMismatch, keyPrefix, resolveFileName, s3MimeFor, s3NameFor, safeKeyName } from "./sync-rules.ts";
 
 export type ResumeFileRow = NonNullable<Awaited<ReturnType<typeof prisma.resume_files.findUnique>>>;
 
@@ -74,7 +74,12 @@ export async function restoreResume(row: ResumeFileRow, actorId: string | null) 
     return;
   }
   // The candidate was deleted: bring the resume back as a new candidate (works whether or not it ever reached Drive).
-  const candidateId = await createCandidate({ resume: resumeJson(row), jobId: null, sourceId: null, intake: row.drive_file_id ? "drive" : "upload", actorId });
+  const resume = row.s3_key
+    ? resumeJson(row)
+    : row.drive_file_id
+      ? { ...resumeJson(row), storage: "drive" as const, mimeType: row.mime_type }
+      : { ...resumeJson(row), storage: "local" as const, driveFileId: row.local_path ?? "", mimeType: row.mime_type };
+  const candidateId = await createCandidate({ resume, jobId: null, sourceId: null, intake: row.drive_file_id ? "drive" : "upload", actorId });
   await prisma.resume_files.update({ where: { id: row.id }, data: { candidate_id: candidateId, state: undeletedState(row), ...cleared } });
   if (row.drive_file_id) await prisma.drive_files.updateMany({ where: { drive_file_id: row.drive_file_id }, data: { status: "imported", candidate_id: candidateId } });
 }
@@ -112,8 +117,7 @@ export async function renameInS3(row: ResumeFileRow, name: string, extra: { driv
     // Not copied to S3 yet: to_s3 will use the new name.
     return prisma.resume_files.update({ where: { id: row.id }, data: { file_name: name, ...extra, updated_at: new Date() } });
   }
-  const prefix = row.s3_key.split("/").slice(0, 2).join("/");
-  const newKey = `${prefix}/${safeKeyName(s3NameFor(name, row.mime_type))}`;
+  const newKey = `${keyPrefix(row.s3_key)}/${safeKeyName(s3NameFor(name, row.mime_type))}`;
   let versionId = row.s3_version_id;
   if (newKey !== row.s3_key) {
     // Copy the exact version the row points at, not whatever is newest at the key.

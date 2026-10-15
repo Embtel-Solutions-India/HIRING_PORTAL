@@ -1,6 +1,7 @@
 /** Resume objects in S3 (versioned bucket). Our own SHA-256 is stored as object metadata; ETags are never used as checksums. */
 import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { config } from "./config.ts";
+import { ChecksumMismatch, digest } from "./sync-rules.ts";
 
 let client: S3Client | null = null;
 const s3 = () =>
@@ -33,7 +34,18 @@ export async function copy(fromKey: string, toKey: string, fromVersionId?: strin
   return { versionId: res.VersionId };
 }
 
-/** On a versioned bucket this adds a delete marker; earlier versions stay until the lifecycle rule expires them. */
-export async function remove(key: string): Promise<void> {
-  await s3().send(new DeleteObjectCommand({ Bucket: Bucket(), Key: key }));
+/**
+ * Without a version: adds a delete marker; earlier versions stay until the lifecycle rule expires them.
+ * With a version: permanently removes just that version (only used for an upload of our own that lost a race).
+ */
+export async function remove(key: string, versionId?: string): Promise<void> {
+  await s3().send(new DeleteObjectCommand({ Bucket: Bucket(), Key: key, VersionId: versionId }));
+}
+
+/** Puts bytes and reads them back; throws ChecksumMismatch unless length and SHA-256 match. */
+export async function putVerified(key: string, data: Buffer, mimeType: string, sha256: string): Promise<string> {
+  const { versionId } = await put(key, data, mimeType, sha256);
+  const back = await get(key, versionId);
+  if (back.length !== data.length || digest(back).sha256 !== sha256) throw new ChecksumMismatch("S3 read-back");
+  return versionId;
 }

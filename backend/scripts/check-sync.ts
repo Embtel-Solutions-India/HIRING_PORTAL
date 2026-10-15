@@ -1,6 +1,7 @@
 // Run: npm run check:sync — assert-based checks of the pure resume-sync rules.
 import assert from "node:assert/strict";
-import { backoffMs, ChecksumMismatch, decide, GOOGLE_DOC, isPermanent, resolveFileName, s3KeyFor, safeKeyName, type Baseline, type DriveObservation, type PortalPending } from "../src/sync-rules.ts";
+import { positiveNumber } from "../src/config.ts";
+import { backoffMs, ChecksumMismatch, decide, GOOGLE_DOC, isPermanent, keyPrefix, nameBaseline, resolveFileName, s3KeyFor, safeKeyName, type Baseline, type DriveObservation, type PortalPending } from "../src/sync-rules.ts";
 
 const PDF = "application/pdf";
 const base: Baseline = { driveMd5: "aaa", driveVersion: "10", driveName: "cv.pdf" };
@@ -50,5 +51,20 @@ assert.equal(isPermanent(new Error("socket hang up"), null), false);
 assert.equal(isPermanent(new ChecksumMismatch("S3 read-back"), null), false, "first checksum mismatch → retry");
 assert.equal(isPermanent(new ChecksumMismatch("S3 read-back"), "Checksum mismatch: S3 read-back"), true, "second in a row → fail");
 assert.equal(isPermanent(Object.assign(new Error("x"), { name: "NoSuchKey" }), null), true);
+
+// --- Drive name seen during a transfer: never silently becomes the baseline ---
+assert.deepEqual(nameBaseline("cv.pdf", "cv.pdf", "cv.pdf"), { baseline: "cv.pdf", rename: null }, "same name → nothing to do");
+assert.deepEqual(nameBaseline("cv.pdf", "cv.pdf", "new.pdf"), { baseline: "cv.pdf", rename: "new.pdf" }, "renamed in Drive mid-transfer → follow-up rename, baseline unchanged");
+assert.deepEqual(nameBaseline(null, "cv.pdf", "new.pdf"), { baseline: "cv.pdf", rename: "new.pdf" }, "first sync: baseline from the portal name");
+assert.deepEqual(nameBaseline("cv.pdf", "cv.pdf", ""), { baseline: "cv.pdf", rename: null }, "no name from Drive → not a rename");
+
+// --- key prefix ---
+assert.equal(keyPrefix("resumes/abc/My CV.pdf"), "resumes/abc");
+
+// --- numeric config ---
+assert.equal(positiveNumber("abc", 30), 30, "non-numeric → default");
+assert.equal(positiveNumber("", 30), 30);
+assert.equal(positiveNumber("0", 30), 1, "clamped to at least 1");
+assert.equal(positiveNumber("7", 30), 7);
 
 console.log("check-sync: all assertions passed");

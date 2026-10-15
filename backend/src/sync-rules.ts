@@ -26,6 +26,17 @@ export function safeKeyName(name: string): string {
 export const s3MimeFor = (mimeType: string) => (mimeType === GOOGLE_DOC ? "application/pdf" : mimeType);
 export const s3NameFor = (fileName: string, mimeType: string) => (mimeType === GOOGLE_DOC && !/\.pdf$/i.test(fileName) ? `${fileName}.pdf` : fileName);
 export const s3KeyFor = (sourceId: string, fileName: string, mimeType: string) => `resumes/${sourceId}/${safeKeyName(s3NameFor(fileName, mimeType))}`;
+/** `resumes/{sourceId}`: fixed for the life of a resume; renames and replaces keep it. */
+export const keyPrefix = (key: string) => key.split("/").slice(0, 2).join("/");
+
+/**
+ * The Drive name a transfer saw. It never silently becomes the baseline: if it differs from the last-synced name,
+ * the baseline stays and a rename follows, so the change still reaches the portal (or raises a conflict).
+ */
+export function nameBaseline(prev: string | null, portalName: string, observed: string): { baseline: string; rename: string | null } {
+  const baseline = prev ?? portalName;
+  return { baseline, rename: observed && observed !== baseline ? observed : null };
+}
 
 const EXT: Record<string, string> = {
   "application/pdf": ".pdf",
