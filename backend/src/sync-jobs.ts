@@ -5,11 +5,11 @@ import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
 import { pollDriveChanges } from "./drive-changes.ts";
 import * as google from "./google.ts";
-import { registerDriveFile, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
+import { registerDriveFile, renameInS3, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
 import * as s3 from "./s3.ts";
 import { driveFolderFor } from "./storage.ts";
 import { claimNext, complete, enqueue, fail, resetRunning, setPayload, type JobRow } from "./sync-queue.ts";
-import { ChecksumMismatch, digest, GOOGLE_DOC, s3KeyFor, s3MimeFor, s3NameFor } from "./sync-rules.ts";
+import { ChecksumMismatch, digest, GOOGLE_DOC, s3KeyFor, s3MimeFor, s3NameFor, safeKeyName } from "./sync-rules.ts";
 
 const frozen = (row: ResumeFileRow, job: JobRow) =>
   (row.state === "conflict" && !job.payload.resolve) || row.state === "pending_deletion" || row.state === "deleted";
@@ -143,12 +143,44 @@ async function renameDrive(job: JobRow, row: ResumeFileRow) {
   });
 }
 
+/** Drive renamed the file: move the S3 object to the new name (baseline name = the Drive name). */
+async function renameS3(job: JobRow, row: ResumeFileRow) {
+  if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
+  const name = String(job.payload.name);
+  await renameInS3(row, name, { drive_name: name });
+  if (job.payload.resolve) {
+    await prisma.resume_files.update({ where: { id: row.id }, data: { state: "synced", conflict: Prisma.DbNull, updated_at: new Date() } });
+  }
+  await complete(job.id);
+}
+
+/** Copies the Drive side of a content conflict into S3 under conflicts/, so both versions survive any resolution. */
+async function stashConflict(job: JobRow, row: ResumeFileRow) {
+  const conflict = row.conflict as { drive?: { stashKey?: string; name?: string } } | null;
+  if (row.state !== "conflict" || !row.drive_file_id || conflict?.drive?.stashKey) return complete(job.id, prisma, "skipped");
+  const meta = await google.getFileMeta(row.drive_file_id);
+  const { data } = await google.downloadFile(row.drive_file_id, meta.mimeType);
+  const { sha256 } = digest(data);
+  const key = `conflicts/${row.id}/${Date.now()}-${safeKeyName(s3NameFor(meta.name, meta.mimeType))}`;
+  await putVerified(key, data, s3MimeFor(meta.mimeType), sha256);
+  await prisma.$transaction(async (tx) => {
+    const fresh = await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } });
+    const c = (fresh.conflict ?? {}) as Record<string, any>;
+    await tx.resume_files.update({ where: { id: row.id }, data: { conflict: { ...c, drive: { ...c.drive, stashKey: key } } as Prisma.InputJsonValue } });
+    await complete(job.id, tx);
+  });
+}
+
 export async function runJob(job: JobRow) {
   const row = await prisma.resume_files.findUnique({ where: { id: job.resume_file_id } });
   if (!row) return complete(job.id, prisma, "skipped: resume row gone");
   switch (job.kind) {
     case "to_s3":
       return toS3(job, row);
+    case "rename_s3":
+      return renameS3(job, row);
+    case "stash_conflict":
+      return stashConflict(job, row);
     case "to_drive":
       return toDrive(job, row);
     case "rename_drive":
