@@ -31,12 +31,17 @@ export async function ensureJobFolder(jobId: string): Promise<string | null> {
   return folderId;
 }
 
+/** The Drive folder a resume belongs in: <root>/<Job>/<Source>/ (or the root when there's no job). */
+export async function driveFolderFor(jobId: string | null, sourceName?: string | null): Promise<string | null> {
+  let folderId = jobId ? await ensureJobFolder(jobId) : (await google.isConnected()) ? await google.ensureRootFolder() : null;
+  if (folderId && jobId && sourceName) folderId = await google.findOrCreateFolder(sourceName, folderId);
+  return folderId;
+}
+
 export async function storeResume(input: { jobId: string | null; sourceName?: string | null; fileName: string; data: Buffer; uploadedById: string }): Promise<ResumeFile> {
   const mimeType = mimeFor(input.fileName);
   const base = { fileName: input.fileName, mimeType, sizeKb: Math.max(1, Math.round(input.data.length / 1024)), uploadedAt: new Date().toISOString(), uploadedById: input.uploadedById };
-  let folderId = input.jobId ? await ensureJobFolder(input.jobId) : (await google.isConnected()) ? await google.ensureRootFolder() : null;
-  // Same layout people use by hand: <root>/<Job>/<Source>/resume.pdf
-  if (folderId && input.jobId && input.sourceName) folderId = await google.findOrCreateFolder(input.sourceName, folderId);
+  const folderId = await driveFolderFor(input.jobId, input.sourceName);
   if (folderId) {
     const file = await google.uploadFile(folderId, input.fileName, mimeType, input.data);
     // Remember it so the Drive sync doesn't import it a second time.
