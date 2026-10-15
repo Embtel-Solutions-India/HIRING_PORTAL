@@ -59,6 +59,16 @@ export const config = {
   dataDir: path.resolve(str("DATA_DIR", path.join(here, "..", "data"))),
   frontendDist: path.resolve(str("FRONTEND_DIST", path.join(here, "..", "..", "frontend", "dist"))),
   driveSyncMinutes: Math.max(1, Number(str("DRIVE_SYNC_MINUTES", "5"))),
+
+  /** Primary resume storage. Empty = resumes stay in Drive / on disk as before. */
+  s3: {
+    region: str("AWS_REGION"),
+    bucket: str("S3_BUCKET"),
+    accessKeyId: str("AWS_ACCESS_KEY_ID"),
+    secretAccessKey: str("AWS_SECRET_ACCESS_KEY"),
+  },
+  /** Days a deleted resume's other copy is kept before it is removed. */
+  resumeDeleteGraceDays: Math.max(1, Number(str("RESUME_DELETE_GRACE_DAYS", "30"))),
 };
 
 export function assertConfig() {

@@ -40,9 +40,17 @@ export interface Job {
   description?: string;
 }
 
+export type SyncStateName = "pending" | "synced" | "conflict" | "failed" | "pending_deletion" | "deleted";
+
 export interface ResumeFile {
-  /** "drive" = stored in Google Drive; "local" = stored on the server disk (Drive not connected yet). */
-  storage?: "drive" | "local";
+  /** "s3" = primary copy in S3 (Drive kept in sync); "drive" = Google Drive only; "local" = server disk (pre-S3). */
+  storage?: "drive" | "local" | "s3";
+  /** resume_files.id once the resume is tracked for S3 sync. */
+  resumeFileId?: string;
+  /** Current S3 version: changes on every replace, used to bust the preview cache. */
+  version?: string;
+  /** Sync state, filled in by the API (not stored). */
+  syncState?: SyncStateName;
   driveFileId: string;
   fileName: string;
   mimeType: string;

@@ -73,6 +73,7 @@ model candidates {
   sources          sources?         @relation(fields: [source_id], references: [id], onUpdate: NoAction)
   stages           stages           @relation(fields: [stage_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   drive_files      drive_files[]
+  resume_files     resume_files?
   email_messages   email_messages[]
   interviews       interviews[]
   notes            notes[]
@@ -270,4 +271,49 @@ model users {
   jobs               jobs[]
   notes              notes[]
   sessions           sessions[]
+}
+
+model resume_files {
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidate_id   String?     @unique @db.Uuid
+  file_name      String
+  mime_type      String
+  size_bytes     Int         @default(0)
+  s3_key         String?     @unique
+  s3_version_id  String?
+  sha256         String?
+  drive_file_id  String?     @unique
+  drive_md5      String?
+  drive_version  String?
+  drive_name     String?
+  local_path     String?     @unique
+  state          String      @default("pending")
+  conflict       Json?
+  review_reason  String?
+  delete_after   DateTime?   @db.Timestamptz(6)
+  deleted_side   String?
+  last_synced_at DateTime?   @db.Timestamptz(6)
+  last_error     String?
+  created_at     DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime    @default(now()) @db.Timestamptz(6)
+  candidates     candidates? @relation(fields: [candidate_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  sync_jobs      sync_jobs[]
+
+  @@index([state], map: "resume_files_state_idx")
+}
+
+model sync_jobs {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  resume_file_id String       @db.Uuid
+  kind           String
+  status         String       @default("queued")
+  payload        Json         @default("{}")
+  attempts       Int          @default(0)
+  run_after      DateTime     @default(now()) @db.Timestamptz(6)
+  last_error     String?
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+  finished_at    DateTime?    @db.Timestamptz(6)
+  resume_files   resume_files @relation(fields: [resume_file_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([status, run_after], map: "sync_jobs_due_idx")
 }

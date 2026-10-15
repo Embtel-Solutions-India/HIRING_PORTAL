@@ -30,6 +30,7 @@ export const PERMISSIONS = {
   "users.manage": ["admin", "super_admin"], // admins manage recruiter & interviewer accounts only
   "users.manageAdmins": ["super_admin"],
   "users.delete": ["super_admin"],
+  "storage.manage": ["admin", "super_admin"],
   "settings.pipeline": ["super_admin"],
   "settings.integrations": ["super_admin"],
   "settings.email": ["super_admin"],
@@ -99,6 +100,7 @@ export const PERMISSION_GROUPS: { label: string; items: { key: Permission; label
       { key: "users.manage", label: "Manage recruiter & interviewer accounts" },
       { key: "users.manageAdmins", label: "Manage admin accounts" },
       { key: "users.delete", label: "Delete team members" },
+      { key: "storage.manage", label: "Manage resume storage sync" },
       { key: "settings.pipeline", label: "Configure pipeline stages" },
       { key: "settings.integrations", label: "Google Drive & Calendar integration" },
       { key: "settings.email", label: "Email domain & sender settings" },
