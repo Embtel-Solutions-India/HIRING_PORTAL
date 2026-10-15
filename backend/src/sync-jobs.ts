@@ -12,8 +12,18 @@ import { driveFolderFor } from "./storage.ts";
 import { claimNext, complete, enqueue, fail, resetRunning, setPayload, type JobRow } from "./sync-queue.ts";
 import { ChecksumMismatch, digest, GOOGLE_DOC, s3KeyFor, s3MimeFor, s3NameFor, safeKeyName } from "./sync-rules.ts";
 
-const frozen = (row: ResumeFileRow, job: JobRow) =>
-  (row.state === "conflict" && !job.payload.resolve) || row.state === "pending_deletion" || row.state === "deleted";
+/** A conflict only holds back jobs of the kind it's about (content or name); deletion holds back everything. */
+function frozen(row: ResumeFileRow, job: JobRow) {
+  if (row.state === "pending_deletion" || row.state === "deleted") return true;
+  if (row.state !== "conflict" || job.payload.resolve) return false;
+  const on = (row.conflict as { on?: string } | null)?.on ?? "both";
+  const contentJob = job.kind === "to_s3" || job.kind === "to_drive";
+  return on === "both" || (contentJob ? on === "content" : on === "name");
+}
+
+/** "synced" and a cleared conflict, unless the row is in a conflict this job doesn't resolve. */
+const settled = (row: ResumeFileRow, job: JobRow) =>
+  row.state === "conflict" && !job.payload.resolve ? {} : { state: "synced", conflict: Prisma.DbNull };
 
 /** Puts bytes in S3 and reads them back; throws unless length and SHA-256 match. */
 async function putVerified(key: string, data: Buffer, mimeType: string, sha256: string) {
@@ -57,7 +67,7 @@ async function toS3(job: JobRow, row: ResumeFileRow) {
     // Only if the portal didn't replace or rename the resume while we were copying; otherwise retry and re-check.
     const { count } = await tx.resume_files.updateMany({
       where: { id: row.id, s3_version_id: row.s3_version_id, s3_key: row.s3_key, file_name: row.file_name },
-      data: { s3_key: key, s3_version_id: versionId, sha256, size_bytes: data.length, ...(baseline ?? {}), state: "synced", conflict: Prisma.DbNull, last_synced_at: new Date(), last_error: null, updated_at: new Date() },
+      data: { s3_key: key, s3_version_id: versionId, sha256, size_bytes: data.length, ...(baseline ?? {}), ...settled(row, job), last_synced_at: new Date(), last_error: null, updated_at: new Date() },
     });
     if (!count) throw new Error("The resume changed in the portal during the copy; will re-check");
     await syncCandidateResume(tx, await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } }));
@@ -123,8 +133,7 @@ async function toDrive(job: JobRow, row: ResumeFileRow) {
       data: {
         // A replaced Google Doc is now a real file of the S3 type. Otherwise the type is ours, never Drive's.
         ...(current?.mimeType === GOOGLE_DOC ? { mime_type: mimeType } : {}),
-        state: "synced",
-        ...(job.payload.resolve ? { conflict: Prisma.DbNull } : {}),
+        ...settled(row, job),
         last_synced_at: new Date(),
         last_error: null,
       },
@@ -144,7 +153,8 @@ async function renameDrive(job: JobRow, row: ResumeFileRow) {
   await prisma.$transaction(async (tx) => {
     await tx.resume_files.update({
       where: { id: row.id },
-      data: { drive_name: name, drive_version: meta.version ?? null, state: "synced", ...(job.payload.resolve ? { conflict: Prisma.DbNull } : {}), last_synced_at: new Date(), updated_at: new Date() },
+      // Only a conflict resolution changes the state; a pending or failed content push must stay visible.
+      data: { drive_name: name, drive_version: meta.version ?? null, ...(job.payload.resolve ? { state: "synced", conflict: Prisma.DbNull } : {}), updated_at: new Date() },
     });
     await complete(job.id, tx);
   });
@@ -198,13 +208,16 @@ async function stashDrive(row: ResumeFileRow) {
 export async function resolveConflict(row: ResumeFileRow, side: "portal" | "drive") {
   if (row.state !== "conflict") throw new HttpError(409, "This resume has no conflict");
   const c = row.conflict as { on?: string; drive?: { name?: string } } | null;
+  const on = c?.on ?? "both";
+  const content = on !== "name";
+  const name = on !== "content";
   if (side === "portal") {
-    if (c?.on !== "name" && row.drive_file_id) await stashDrive(row);
-    await enqueue(row.id, "to_drive", { resolve: true });
-    await enqueue(row.id, "rename_drive", { name: row.file_name, resolve: true });
+    if (content && row.drive_file_id) await stashDrive(row);
+    if (content) await enqueue(row.id, "to_drive", { resolve: true });
+    if (name) await enqueue(row.id, "rename_drive", { name: row.file_name, resolve: true });
   } else {
-    await enqueue(row.id, "to_s3", { resolve: true });
-    if (c?.drive?.name) await enqueue(row.id, "rename_s3", { name: c.drive.name, resolve: true });
+    if (content) await enqueue(row.id, "to_s3", { resolve: true });
+    if (name && c?.drive?.name) await enqueue(row.id, "rename_s3", { name: c.drive.name, resolve: true });
   }
 }
 
@@ -290,7 +303,9 @@ async function purge(job: JobRow, row: ResumeFileRow) {
     });
   }
   await prisma.$transaction(async (tx) => {
-    await tx.resume_files.update({ where: { id: row.id }, data: { state: "deleted", updated_at: new Date() } });
+    await tx.resume_files.update({ where: { id: row.id }, data: { state: "deleted", s3_key: null, s3_version_id: null, sha256: null, updated_at: new Date() } });
+    // Drive-side deletion of a live candidate: they no longer have a resume on file.
+    if (row.candidate_id) await tx.candidates.update({ where: { id: row.candidate_id }, data: { resume: Prisma.DbNull } });
     await complete(job.id, tx);
   });
 }

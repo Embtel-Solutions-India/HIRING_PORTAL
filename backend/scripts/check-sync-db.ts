@@ -2,7 +2,9 @@
 // Database-level checks of the sync queue, worker guards and change handling (no S3 or Drive calls).
 import assert from "node:assert/strict";
 import { prisma } from "../src/db.ts";
-import { applyChanges } from "../src/drive-changes.ts";
+import { applyChanges, flagConflict } from "../src/drive-changes.ts";
+import { HttpError } from "../src/http.ts";
+import { markCandidatesDeleted, restoreResume } from "../src/resume-files.ts";
 import { claimNext, enqueue, fail, resetRunning, retryRow } from "../src/sync-queue.ts";
 import { resolveConflict, runJob } from "../src/sync-jobs.ts";
 
@@ -126,6 +128,82 @@ const runOne = async (id: string, kind: string) => {
   assert.equal((await fresh(bad.id)).state, "failed", "I6: failing change recorded on its row");
   assert.ok((await jobsOf(good.id)).some((j) => j.kind === "to_s3"), "I6: later change still applied");
   console.log("I6 ok");
+}
+
+// R1: two failed jobs of one kind → Retry queues one (no unique-index crash).
+{
+  await clearQueue();
+  const r = await mk();
+  for (const md5 of ["a", "b"]) {
+    await enqueue(r.id, "to_drive", { md5 });
+    const j = (await claimNext())!;
+    await fail(j, Object.assign(new Error("gone"), { status: 404 }));
+  }
+  await retryRow(r.id);
+  const jobs = await jobsOf(r.id);
+  assert.equal(jobs.filter((j) => j.status === "queued").length, 1, "R1: exactly one queued");
+  assert.equal(jobs.filter((j) => j.status === "failed").length, 0, "R1: the other is retired");
+  console.log("R1 ok");
+}
+
+// R2: a name-only conflict leaves the portal's content push alone; keep-Drive only re-pushes the name.
+{
+  await clearQueue();
+  const r = await mk();
+  await enqueue(r.id, "to_drive", { md5: "portal" });
+  await flagConflict(r, { md5: "aaa", version: "2", name: "drive.pdf" }, "name");
+  const queued = (await jobsOf(r.id)).filter((j) => j.status === "queued").map((j) => j.kind);
+  assert.deepEqual(queued, ["to_drive"], "R2: content push not cancelled by a name conflict");
+  await prisma.sync_jobs.deleteMany({ where: { resume_file_id: r.id } });
+  await resolveConflict(await fresh(r.id), "drive");
+  assert.deepEqual((await jobsOf(r.id)).map((j) => j.kind), ["rename_s3"], "R2: keep-Drive on a name conflict doesn't touch content");
+  console.log("R2 ok");
+}
+
+// R4: purge clears the S3 pointers and the candidate's resume.
+{
+  await clearQueue();
+  const stage = (await prisma.stages.findFirst())!;
+  const cand = await prisma.candidates.create({ data: { first_name: "R4", stage_id: stage.id, resume: { storage: "s3", fileName: "cv.pdf" } } });
+  const r = await mk({ s3_key: null, candidate_id: cand.id, state: "pending_deletion", deleted_side: "drive", delete_after: new Date(Date.now() - 1000) });
+  await enqueue(r.id, "purge");
+  await runOne(r.id, "purge");
+  const after = await fresh(r.id);
+  assert.equal(after.state, "deleted");
+  assert.equal(after.sha256, null, "R4: sha cleared so a re-import re-uploads");
+  assert.equal((await prisma.candidates.findUniqueOrThrow({ where: { id: cand.id } })).resume, null, "R4: candidate no longer points at it");
+  await prisma.resume_files.delete({ where: { id: r.id } });
+  await prisma.candidates.delete({ where: { id: cand.id } });
+  console.log("R4 ok");
+}
+
+// R6: deleting a candidate keeps a conflict; restoring brings the conflict back, not "synced".
+{
+  await clearQueue();
+  const stage = (await prisma.stages.findFirst())!;
+  const cand = await prisma.candidates.create({ data: { first_name: "R6", stage_id: stage.id } });
+  const r = await mk({ candidate_id: cand.id, state: "conflict", conflict: { on: "content" } });
+  assert.equal(await markCandidatesDeleted([cand.id]), 1);
+  const pend = await fresh(r.id);
+  assert.equal(pend.state, "pending_deletion");
+  assert.equal((pend.conflict as { on: string }).on, "content", "R6: conflict kept");
+  await restoreResume(pend);
+  assert.equal((await fresh(r.id)).state, "conflict", "R6: restore returns to conflict");
+  console.log("R6 ok");
+}
+
+// R7: "Drive isn't connected" waits for reconnection instead of burning retries.
+{
+  await clearQueue();
+  const r = await mk();
+  await enqueue(r.id, "to_drive");
+  const j = (await claimNext())!;
+  await fail(j, new HttpError(409, "Google Workspace isn't connected. A Super Admin can connect it in Settings."));
+  const after = (await jobsOf(r.id))[0]!;
+  assert.equal(after.status, "queued");
+  assert.equal(after.attempts, 0, "R7: no attempt used");
+  assert.ok(after.run_after > new Date(Date.now() + 10 * 60_000), "R7: waits a while");
+  console.log("R7 ok");
 }
 
 await prisma.resume_files.deleteMany({ where: { drive_file_id: { startsWith: PREFIX } } });

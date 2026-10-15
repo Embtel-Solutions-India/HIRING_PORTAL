@@ -4,6 +4,7 @@ import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
 import { ensureChangesCheckpoint } from "./drive-changes.ts";
 import * as google from "./google.ts";
+import { HttpError } from "./http.ts";
 import * as s3 from "./s3.ts";
 import { patchSetting } from "./settings.ts";
 import { enqueue, type Db } from "./sync-queue.ts";
@@ -37,6 +38,47 @@ export async function syncCandidateResume(db: Db, row: ResumeFileRow) {
 }
 
 export const graceDate = () => new Date(Date.now() + config.resumeDeleteGraceDays * 86_400_000);
+
+/** The state a resume returns to when its deletion is cancelled: an unresolved conflict comes back. */
+export const undeletedState = (row: { conflict: unknown }) => (row.conflict ? "conflict" : "synced");
+
+/** Deletes candidates and starts their resumes' grace period, all or nothing. Conflicts are kept for a later restore. */
+export async function markCandidatesDeleted(ids: string[]): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    await tx.resume_files.updateMany({
+      where: { candidate_id: { in: ids }, state: { not: "deleted" } },
+      data: { state: "pending_deletion", deleted_side: "portal", delete_after: graceDate(), updated_at: new Date() },
+    });
+    return (await tx.candidates.deleteMany({ where: { id: { in: ids } } })).count;
+  });
+}
+
+/** Admin "Restore" on a resume pending deletion. */
+export async function restoreResume(row: ResumeFileRow) {
+  if (row.state !== "pending_deletion") throw new HttpError(409, "This resume isn't pending deletion");
+  const cleared = { delete_after: null, deleted_side: null, updated_at: new Date() };
+  if (row.deleted_side === "drive") {
+    try {
+      await google.setTrashed(row.drive_file_id!, false);
+      await prisma.resume_files.update({ where: { id: row.id }, data: { state: undeletedState(row), ...cleared } });
+    } catch (e) {
+      if (!(e instanceof HttpError && e.status === 404)) throw e;
+      // Gone from Drive for good: put the S3 copy back as a new Drive file (nothing left to conflict with).
+      await prisma.resume_files.update({
+        where: { id: row.id },
+        data: { drive_file_id: null, drive_md5: null, drive_version: null, drive_name: null, state: "pending", conflict: Prisma.DbNull, ...cleared },
+      });
+      await enqueue(row.id, "to_drive");
+    }
+    return;
+  }
+  if (!row.drive_file_id) throw new HttpError(409, "This resume never reached Drive, so it can't go back to the Drive inbox");
+  // The candidate is gone: the file returns to the Drive inbox, where importing it creates a new candidate.
+  await prisma.$transaction([
+    prisma.drive_files.updateMany({ where: { drive_file_id: row.drive_file_id }, data: { status: "inbox", candidate_id: null } }),
+    prisma.resume_files.update({ where: { id: row.id }, data: { state: undeletedState(row), ...cleared } }),
+  ]);
+}
 
 export async function startDeletion(id: string, side: "drive" | "portal") {
   await prisma.resume_files.update({ where: { id }, data: { state: "pending_deletion", deleted_side: side, delete_after: graceDate(), updated_at: new Date() } });
@@ -75,14 +117,24 @@ export async function renameInS3(row: ResumeFileRow, name: string, extra: { driv
   const newKey = `${prefix}/${safeKeyName(s3NameFor(name, row.mime_type))}`;
   let versionId = row.s3_version_id;
   if (newKey !== row.s3_key) {
-    ({ versionId } = await s3.copy(row.s3_key, newKey));
+    // Copy the exact version the row points at, not whatever is newest at the key.
+    ({ versionId } = await s3.copy(row.s3_key, newKey, row.s3_version_id ?? undefined));
     const h = await s3.head(newKey, versionId);
     if (h.size !== row.size_bytes || h.sha256 !== row.sha256) throw new ChecksumMismatch("S3 copy");
   }
   const updated = await prisma.$transaction(async (tx) => {
-    const u = await tx.resume_files.update({ where: { id: row.id }, data: { s3_key: newKey, s3_version_id: versionId, file_name: name, ...extra, updated_at: new Date() } });
+    // Only if nothing (e.g. the sync worker) changed the resume while we copied.
+    const { count } = await tx.resume_files.updateMany({
+      where: { id: row.id, s3_key: row.s3_key, s3_version_id: row.s3_version_id },
+      data: { s3_key: newKey, s3_version_id: versionId, file_name: name, ...extra, updated_at: new Date() },
+    });
+    if (!count) throw new HttpError(409, "The resume changed while it was being renamed — try again");
+    const u = await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } });
     await syncCandidateResume(tx, u);
     return u;
+  }).catch(async (e) => {
+    if (newKey !== row.s3_key) await s3.remove(newKey).catch(() => {});
+    throw e;
   });
   if (newKey !== row.s3_key) await s3.remove(row.s3_key).catch((e) => console.warn("[sync] couldn't remove old key", row.s3_key, e));
   return updated;

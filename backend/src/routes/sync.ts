@@ -2,9 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { logActivity } from "../activity.ts";
 import { prisma } from "../db.ts";
-import * as google from "../google.ts";
 import { HttpError, isUuid, requirePerm } from "../http.ts";
-import { startMigration } from "../resume-files.ts";
+import { restoreResume, startMigration } from "../resume-files.ts";
 import { s3Configured } from "../s3.ts";
 import { getSetting } from "../settings.ts";
 import { enqueue, retryRow } from "../sync-queue.ts";
@@ -85,28 +84,7 @@ export default async function syncRoutes(app: FastifyInstance) {
         break;
       }
       case "restore":
-        if (row.state !== "pending_deletion") throw new HttpError(409, "This resume isn't pending deletion");
-        if (row.deleted_side === "drive") {
-          try {
-            await google.setTrashed(row.drive_file_id!, false);
-            await prisma.resume_files.update({ where: { id: row.id }, data: { state: "synced", delete_after: null, deleted_side: null, updated_at: new Date() } });
-          } catch (e) {
-            if (!(e instanceof HttpError && e.status === 404)) throw e;
-            // Gone from Drive for good: put the S3 copy back as a new Drive file.
-            await prisma.resume_files.update({
-              where: { id: row.id },
-              data: { drive_file_id: null, drive_md5: null, drive_version: null, drive_name: null, state: "pending", delete_after: null, deleted_side: null, updated_at: new Date() },
-            });
-            await enqueue(row.id, "to_drive");
-          }
-        } else {
-          if (!row.drive_file_id) throw new HttpError(409, "This resume never reached Drive, so it can't go back to the Drive inbox");
-          // The candidate is gone: the file returns to the Drive inbox, where importing it creates a new candidate.
-          await prisma.$transaction([
-            prisma.drive_files.updateMany({ where: { drive_file_id: row.drive_file_id }, data: { status: "inbox", candidate_id: null } }),
-            prisma.resume_files.update({ where: { id: row.id }, data: { state: "synced", delete_after: null, deleted_side: null, updated_at: new Date() } }),
-          ]);
-        }
+        await restoreResume(row);
         await logActivity(user.id, "settings_changed", `restored the resume ${row.file_name}`);
         break;
       case "delete-now":

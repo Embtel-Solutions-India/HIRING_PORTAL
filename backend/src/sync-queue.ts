@@ -47,8 +47,22 @@ async function handOverDriveId(job: JobRow) {
     where resume_file_id = ${job.resume_file_id}::uuid and kind = ${job.kind} and status = 'queued' and payload->>'newFileId' is null`;
 }
 
+/** Puts the job back in the queue unless a twin is already queued (then it's superseded). */
+async function requeue(job: JobRow, attempts: number, message: string, runAfter: Date) {
+  const requeued = await prisma.$executeRaw`
+    update sync_jobs set status = 'queued', attempts = ${attempts}, last_error = ${message}, run_after = ${runAfter}
+    where id = ${job.id}::uuid and not exists (
+      select 1 from sync_jobs q where q.resume_file_id = ${job.resume_file_id}::uuid and q.kind = ${job.kind} and q.status = 'queued')`;
+  if (!requeued) {
+    await handOverDriveId(job);
+    await complete(job.id, prisma, `superseded after: ${message}`);
+  }
+}
+
 export async function fail(job: JobRow, err: unknown) {
   const message = errText(err);
+  // Drive disconnected: wait for it to be reconnected instead of using up retries.
+  if (/isn't connected/.test(message)) return requeue(job, job.attempts, message, new Date(Date.now() + 15 * 60_000));
   const attempts = job.attempts + 1;
   if (isPermanent(err, job.last_error) || attempts >= MAX_ATTEMPTS) {
     await handOverDriveId(job);
@@ -60,24 +74,22 @@ export async function fail(job: JobRow, err: unknown) {
     ]);
     return;
   }
-  const runAfter = new Date(Date.now() + backoffMs(attempts));
-  const requeued = await prisma.$executeRaw`
-    update sync_jobs set status = 'queued', attempts = ${attempts}, last_error = ${message}, run_after = ${runAfter}
-    where id = ${job.id}::uuid and not exists (
-      select 1 from sync_jobs q where q.resume_file_id = ${job.resume_file_id}::uuid and q.kind = ${job.kind} and q.status = 'queued')`;
-  // A newer job of the same kind is already queued: it supersedes this one.
-  if (!requeued) {
-    await handOverDriveId(job);
-    await complete(job.id, prisma, `superseded after: ${message}`);
-  }
+  await requeue(job, attempts, message, new Date(Date.now() + backoffMs(attempts)));
 }
 
 /** Admin "Retry": failed jobs go back to the queue with a fresh attempt count. */
 export async function retryRow(resumeFileId: string) {
+  // Only the newest failed job of each kind goes back (one queued per kind); it inherits any pre-generated Drive id.
   const requeued = await prisma.$executeRaw`
-    update sync_jobs j set status = 'queued', attempts = 0, run_after = now(), finished_at = null
-    where j.resume_file_id = ${resumeFileId}::uuid and j.status = 'failed' and not exists (
+    with pick as (
+      select distinct on (kind) id from sync_jobs where resume_file_id = ${resumeFileId}::uuid and status = 'failed' order by kind, created_at desc)
+    update sync_jobs j set status = 'queued', attempts = 0, run_after = now(), finished_at = null,
+      payload = coalesce((select jsonb_build_object('newFileId', o.payload->>'newFileId') from sync_jobs o
+        where o.resume_file_id = j.resume_file_id and o.kind = j.kind and o.status = 'failed' and o.payload->>'newFileId' is not null limit 1), '{}'::jsonb) || j.payload
+    from pick
+    where j.id = pick.id and not exists (
       select 1 from sync_jobs q where q.resume_file_id = j.resume_file_id and q.kind = j.kind and q.status = 'queued')`;
+  await prisma.sync_jobs.updateMany({ where: { resume_file_id: resumeFileId, status: "failed" }, data: { status: "done", last_error: "superseded by retry" } });
   const queued = await prisma.sync_jobs.count({ where: { resume_file_id: resumeFileId, status: { in: ["queued", "running"] } } });
   if (!requeued && !queued) {
     // Failed without a job (e.g. lost Drive access): re-check from the source side.

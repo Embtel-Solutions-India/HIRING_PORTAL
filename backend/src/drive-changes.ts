@@ -2,7 +2,7 @@
 import { Prisma, prisma } from "./db.ts";
 import * as google from "./google.ts";
 import { HttpError } from "./http.ts";
-import { startDeletion, type ResumeFileRow } from "./resume-files.ts";
+import { startDeletion, undeletedState, type ResumeFileRow } from "./resume-files.ts";
 import { enqueue } from "./sync-queue.ts";
 import { decide, type DriveObservation, type PortalPending, type SyncState } from "./sync-rules.ts";
 import { getSetting, patchSetting, setSetting } from "./settings.ts";
@@ -117,7 +117,7 @@ export async function flagConflict(row: ResumeFileRow, drive: { md5: string | nu
     }),
     // Stop pushing the portal version over Drive until an Admin decides.
     prisma.sync_jobs.updateMany({
-      where: { resume_file_id: row.id, kind: { in: ["to_drive", "rename_drive"] }, status: { in: ["queued", "failed"] } },
+      where: { resume_file_id: row.id, kind: { in: on === "content" ? ["to_drive"] : ["rename_drive"] }, status: { in: ["queued", "failed"] } },
       data: { status: "done", last_error: "cancelled: conflict", finished_at: now },
     }),
   ]);
@@ -147,7 +147,7 @@ export async function applyChange(row: ResumeFileRow, ch: google.DriveChange) {
     else if (d.do === "conflict") await flagConflict(row, { md5: obs.md5, version: obs.version, name: obs.name }, d.on);
     else if (d.do === "start_deletion") await startDeletion(row.id, "drive");
     else if (d.do === "cancel_deletion")
-      await prisma.resume_files.update({ where: { id: row.id }, data: { state: "synced", delete_after: null, deleted_side: null, updated_at: new Date() } });
+      await prisma.resume_files.update({ where: { id: row.id }, data: { state: undeletedState(row), delete_after: null, deleted_side: null, updated_at: new Date() } });
     else if (d.do === "check_removed") {
       try {
         await google.getFileMeta(row.drive_file_id!);

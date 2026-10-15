@@ -26,8 +26,8 @@ export async function head(key: string, versionId?: string): Promise<{ size: num
 }
 
 /** Server-side copy; metadata (incl. sha256) is copied with the object. */
-export async function copy(fromKey: string, toKey: string): Promise<{ versionId: string }> {
-  const source = `${Bucket()}/${fromKey.split("/").map(encodeURIComponent).join("/")}`;
+export async function copy(fromKey: string, toKey: string, fromVersionId?: string): Promise<{ versionId: string }> {
+  const source = `${Bucket()}/${fromKey.split("/").map(encodeURIComponent).join("/")}${fromVersionId ? `?versionId=${encodeURIComponent(fromVersionId)}` : ""}`;
   const res = await s3().send(new CopyObjectCommand({ Bucket: Bucket(), Key: toKey, CopySource: source }));
   if (!res.VersionId) throw new Error("S3 bucket versioning is off — turn it on (see DEPLOY.md)");
   return { versionId: res.VersionId };
