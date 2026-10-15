@@ -66,7 +66,10 @@ export const config = {
   frontendDist: path.resolve(str("FRONTEND_DIST", path.join(here, "..", "..", "frontend", "dist"))),
   driveSyncMinutes: positiveNumber(str("DRIVE_SYNC_MINUTES"), 5),
 
-  /** Primary resume storage. Empty = resumes stay in Drive / on disk as before. */
+  /**
+   * Primary resume storage: region + bucket turn it on (empty = resumes stay in Drive / on disk as before).
+   * The access keys are optional; without them the server's IAM role is used (EC2 instance profile).
+   */
   s3: {
     region: str("AWS_REGION"),
     bucket: str("S3_BUCKET"),

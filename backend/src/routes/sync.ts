@@ -109,7 +109,7 @@ export default async function syncRoutes(app: FastifyInstance) {
 
   app.post("/api/sync/migrate", async (req) => {
     const user = requirePerm(req, "storage.manage");
-    if (!s3Configured()) throw new HttpError(409, "S3 isn't configured — set AWS_REGION, S3_BUCKET and the access keys first");
+    if (!s3Configured()) throw new HttpError(409, "S3 isn't configured — set AWS_REGION and S3_BUCKET first");
     const result = await startMigration();
     await logActivity(user.id, "settings_changed", `started the resume migration to S3 (${result.queued} queued)`);
     return result;

@@ -117,7 +117,7 @@ Resumes are stored in S3 and kept in sync with Google Drive. Skip this section t
 1. Create a **private** bucket in your region. Block all public access.
 2. **Turn on Versioning** (Bucket → Properties → Bucket Versioning → Enable). The app refuses to store files without it.
 3. Add a lifecycle rule: *Permanently delete noncurrent versions* after 90 days (or your retention period).
-4. Create an IAM user with this policy (replace `YOUR-BUCKET`) and an access key:
+4. Give the app access with this policy (replace `YOUR-BUCKET`):
 
    ```json
    {
@@ -129,7 +129,15 @@ Resumes are stored in S3 and kept in sync with Google Drive. Skip this section t
    }
    ```
 
-5. Set `AWS_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and optionally `RESUME_DELETE_GRACE_DAYS`) and restart.
+   - **On EC2 (recommended, no keys):** create an IAM **role** for EC2 with this policy and attach it to the instance
+     (EC2 → Instance → Actions → Security → Modify IAM role). Because the app runs in Docker, let containers reach
+     the instance's credentials by raising the metadata hop limit to 2 once:
+     `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2 --http-endpoint enabled`
+   - **Anywhere else (e.g. Lightsail):** create an IAM **user** with this policy and an access key, and set
+     `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` too.
+
+5. Set `AWS_REGION` and `S3_BUCKET` (plus the two keys only if you're not using an EC2 role, and optionally
+   `RESUME_DELETE_GRACE_DAYS`) and restart.
 6. In **Settings → Resume sync**, click **Start migration**. Watch *Migrated to S3* reach *N of N*. Drive files are not changed.
    Re-running the migration is safe. Keep the Drive originals until the dashboard shows every resume migrated and no failures.
 
