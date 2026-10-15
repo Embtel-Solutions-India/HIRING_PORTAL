@@ -19,6 +19,7 @@ import driveRoutes from "./routes/drive.ts";
 import interviewRoutes from "./routes/interviews.ts";
 import publicRoutes from "./routes/public.ts";
 import sourceRoutes from "./routes/sources.ts";
+import { syncTick } from "./sync-jobs.ts";
 
 assertConfig();
 await migrate();
@@ -82,6 +83,7 @@ const every = (ms: number, label: string, fn: () => Promise<unknown>) =>
 
 every(60_000, "email", sendDueCampaigns);
 every(config.driveSyncMinutes * 60_000, "drive", syncDrive);
+every(30_000, "sync", syncTick);
 every(3600_000, "sessions", () => prisma.sessions.deleteMany({ where: { expires_at: { lt: new Date() } } }));
 resumePendingParses().catch((e) => console.error("[parse] resume failed", e));
 

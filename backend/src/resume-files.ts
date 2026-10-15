@@ -2,7 +2,10 @@
 import type { ResumeFile } from "../../frontend/src/types.ts";
 import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
+import { ensureChangesCheckpoint } from "./drive-changes.ts";
+import * as google from "./google.ts";
 import * as s3 from "./s3.ts";
+import { patchSetting } from "./settings.ts";
 import { enqueue, type Db } from "./sync-queue.ts";
 import { ChecksumMismatch, resolveFileName, s3MimeFor, s3NameFor, safeKeyName } from "./sync-rules.ts";
 
@@ -83,4 +86,42 @@ export async function renameInS3(row: ResumeFileRow, name: string, extra: { driv
   });
   if (newKey !== row.s3_key) await s3.remove(row.s3_key).catch((e) => console.warn("[sync] couldn't remove old key", row.s3_key, e));
   return updated;
+}
+
+/**
+ * Queues every resume that isn't on S3 yet. Safe to run any number of times: rows are keyed by the stable
+ * source id (Drive file id / local file id) and duplicate jobs merge. Drive originals are never touched.
+ */
+export async function startMigration(): Promise<{ queued: number }> {
+  if (!s3.s3Configured()) return { queued: 0 };
+  await ensureChangesCheckpoint();
+  await patchSetting("migration", { startedAt: new Date().toISOString() });
+  const todo = await prisma.$queryRaw<{ id: string; resume: ResumeFile }[]>`
+    select c.id, c.resume from candidates c left join resume_files r on r.candidate_id = c.id
+    where r.id is null and c.resume is not null and coalesce(c.resume->>'driveFileId', '') <> ''`;
+  let queued = 0;
+  for (const c of todo) {
+    const local = c.resume.storage === "local";
+    const mime = c.resume.mimeType || "application/octet-stream";
+    const { fileName, reviewReason } = resolveFileName(c.resume.fileName, c.resume.driveFileId, mime);
+    const source = local ? { local_path: c.resume.driveFileId } : { drive_file_id: c.resume.driveFileId };
+    const row = await prisma.resume_files.upsert({
+      where: source,
+      create: { candidate_id: c.id, file_name: fileName, mime_type: mime, size_bytes: (c.resume.sizeKb || 0) * 1024, review_reason: reviewReason, ...source },
+      update: {},
+    });
+    if (row.candidate_id !== c.id) {
+      console.warn(`[migration] ${c.id} shares its resume file with candidate ${row.candidate_id}; left on Drive`);
+      continue;
+    }
+    await enqueue(row.id, "to_s3");
+    queued++;
+  }
+  // Portal uploads made while Drive was disconnected still need their Drive copy.
+  if (await google.isConnected()) {
+    const noDrive = await prisma.resume_files.findMany({ where: { drive_file_id: null, s3_key: { not: null }, state: { in: ["pending", "synced", "failed"] } }, select: { id: true } });
+    for (const r of noDrive) await enqueue(r.id, "to_drive");
+    queued += noDrive.length;
+  }
+  return { queued };
 }
