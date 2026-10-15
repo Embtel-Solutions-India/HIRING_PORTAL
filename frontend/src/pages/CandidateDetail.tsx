@@ -8,7 +8,7 @@ import { ScheduleInterviewModal } from "../components/ScheduleInterviewModal";
 import { Avatar, AvatarStack, Badge, Button, EmptyState, IconButton, Menu, MenuItem, StageBadge, Stars, Tabs } from "../components/ui";
 import { SourceBadge, SourcePicker } from "../components/SourcePicker";
 import { useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
-import { cn, daysSince, fmtDate, fmtDayLabel, fmtTime, fullName, timeAgo } from "../lib/utils";
+import { cn, daysSince, fmtDate, fmtDayLabel, fmtTime, fullName, timeAgo, resumeKeptNote } from "../lib/utils";
 
 export default function CandidateDetail() {
   const { id } = useParams();
@@ -23,6 +23,7 @@ export default function CandidateDetail() {
   const toggleStar = useStore((s) => s.toggleStar);
   const moveStage = useStore((s) => s.moveStage);
   const deleteCandidates = useStore((s) => s.deleteCandidates);
+  const settings = useStore((s) => s.settings);
   const toast = useStore((s) => s.toast);
   const stageMap = useStageMap();
   const sourceMap = useSourceMap();
@@ -134,7 +135,7 @@ export default function CandidateDetail() {
                     icon={<Trash2 size={15} />}
                     onClick={() => {
                       close();
-                      if (confirm(`Delete ${fullName(c)}? Their resume is kept for 30 days and can be restored by an Admin.`)) {
+                      if (confirm(`Delete ${fullName(c)}? ${resumeKeptNote(settings.system, false)}`)) {
                         deleteCandidates([c.id]);
                         toast("Candidate deleted");
                         navigate("/candidates");

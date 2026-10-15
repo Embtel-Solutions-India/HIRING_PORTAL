@@ -5,6 +5,7 @@ import { Prisma, prisma } from "./db.ts";
 import { ensureChangesCheckpoint } from "./drive-changes.ts";
 import * as google from "./google.ts";
 import { HttpError } from "./http.ts";
+import { createCandidate } from "./pipeline.ts";
 import * as s3 from "./s3.ts";
 import { patchSetting } from "./settings.ts";
 import { enqueue, type Db } from "./sync-queue.ts";
@@ -54,7 +55,7 @@ export async function markCandidatesDeleted(ids: string[]): Promise<number> {
 }
 
 /** Admin "Restore" on a resume pending deletion. */
-export async function restoreResume(row: ResumeFileRow) {
+export async function restoreResume(row: ResumeFileRow, actorId: string | null) {
   if (row.state !== "pending_deletion") throw new HttpError(409, "This resume isn't pending deletion");
   const cleared = { delete_after: null, deleted_side: null, updated_at: new Date() };
   if (row.deleted_side === "drive") {
@@ -72,12 +73,10 @@ export async function restoreResume(row: ResumeFileRow) {
     }
     return;
   }
-  if (!row.drive_file_id) throw new HttpError(409, "This resume never reached Drive, so it can't go back to the Drive inbox");
-  // The candidate is gone: the file returns to the Drive inbox, where importing it creates a new candidate.
-  await prisma.$transaction([
-    prisma.drive_files.updateMany({ where: { drive_file_id: row.drive_file_id }, data: { status: "inbox", candidate_id: null } }),
-    prisma.resume_files.update({ where: { id: row.id }, data: { state: undeletedState(row), ...cleared } }),
-  ]);
+  // The candidate was deleted: bring the resume back as a new candidate (works whether or not it ever reached Drive).
+  const candidateId = await createCandidate({ resume: resumeJson(row), jobId: null, sourceId: null, intake: row.drive_file_id ? "drive" : "upload", actorId });
+  await prisma.resume_files.update({ where: { id: row.id }, data: { candidate_id: candidateId, state: undeletedState(row), ...cleared } });
+  if (row.drive_file_id) await prisma.drive_files.updateMany({ where: { drive_file_id: row.drive_file_id }, data: { status: "imported", candidate_id: candidateId } });
 }
 
 export async function startDeletion(id: string, side: "drive" | "portal") {
@@ -91,7 +90,7 @@ export async function trackDriveImport(candidateId: string, f: { drive_file_id: 
   const row = await prisma.resume_files.upsert({
     where: { drive_file_id: f.drive_file_id },
     create: { candidate_id: candidateId, file_name: fileName, mime_type: f.mime_type, drive_file_id: f.drive_file_id, review_reason: reviewReason },
-    update: { candidate_id: candidateId, state: "pending", delete_after: null, deleted_side: null, updated_at: new Date() },
+    update: { candidate_id: candidateId, state: "pending", conflict: Prisma.DbNull, last_error: null, delete_after: null, deleted_side: null, updated_at: new Date() },
   });
   await enqueue(row.id, "to_s3");
 }
@@ -171,7 +170,7 @@ export async function startMigration(): Promise<{ queued: number }> {
   }
   // Portal uploads made while Drive was disconnected still need their Drive copy.
   if (await google.isConnected()) {
-    const noDrive = await prisma.resume_files.findMany({ where: { drive_file_id: null, s3_key: { not: null }, state: { in: ["pending", "synced", "failed"] } }, select: { id: true } });
+    const noDrive = await prisma.resume_files.findMany({ where: { drive_file_id: null, s3_key: { not: null }, candidate_id: { not: null }, state: { in: ["pending", "synced", "failed"] } }, select: { id: true } });
     for (const r of noDrive) await enqueue(r.id, "to_drive");
     queued += noDrive.length;
   }

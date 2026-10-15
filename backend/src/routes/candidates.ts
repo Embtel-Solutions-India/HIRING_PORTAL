@@ -174,7 +174,15 @@ export default async function candidateRoutes(app: FastifyInstance) {
       }
       const data = await part.toBuffer();
       const resume = await storeResume({ jobId, sourceName: source?.name, fileName: part.filename, data, uploadedById: user.id });
-      const candidateId = await createCandidate({ resume, jobId, sourceId: source?.id ?? null, intake: "upload", actorId: user.id });
+      const candidateId = await createCandidate({ resume, jobId, sourceId: source?.id ?? null, intake: "upload", actorId: user.id }).catch(async (e) => {
+        // Don't leave an S3 object and a resume row with no candidate behind.
+        if (resume.resumeFileId) {
+          const orphan = await prisma.resume_files.findUnique({ where: { id: resume.resumeFileId } });
+          await prisma.resume_files.delete({ where: { id: resume.resumeFileId } }).catch(() => {});
+          if (orphan?.s3_key) await s3.remove(orphan.s3_key).catch(() => {});
+        }
+        throw e;
+      });
       if (resume.resumeFileId) {
         await prisma.resume_files.update({ where: { id: resume.resumeFileId }, data: { candidate_id: candidateId } });
         if (await google.isConnected()) await enqueue(resume.resumeFileId, "to_drive", { md5: digest(data).md5 });

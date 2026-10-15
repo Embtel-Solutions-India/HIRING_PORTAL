@@ -222,6 +222,8 @@ export interface OrgSettings {
     smtpHost: string;
     googleOAuthConfigured: boolean;
     timezone: string;
+    s3Configured?: boolean;
+    resumeGraceDays?: number;
   };
 }
 

@@ -14,6 +14,7 @@ import type {
 import { aiConfigured } from "./ai.ts";
 import { config } from "./config.ts";
 import type { UserRow } from "./http.ts";
+import { s3Configured } from "./s3.ts";
 import { getSetting } from "./settings.ts";
 
 type Row = Record<string, any>;
@@ -178,6 +179,8 @@ export async function orgSettings(): Promise<OrgSettings> {
       smtpHost: config.email.smtp.host,
       googleOAuthConfigured: !!(config.google.clientId && config.google.clientSecret),
       timezone: config.orgTimezone,
+      s3Configured: s3Configured(),
+      resumeGraceDays: config.resumeDeleteGraceDays,
     },
   };
 }

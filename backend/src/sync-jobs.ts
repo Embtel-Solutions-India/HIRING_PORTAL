@@ -286,7 +286,7 @@ async function hourlyScan() {
   // Resumes stored while Drive was disconnected get their Drive copy once it is connected.
   if (await google.isConnected()) {
     const noDrive = await prisma.resume_files.findMany({
-      where: { drive_file_id: null, s3_key: { not: null }, state: { in: ["pending", "synced"] }, sync_jobs: { none: { kind: "to_drive", status: { in: ["queued", "running"] } } } },
+      where: { drive_file_id: null, s3_key: { not: null }, candidate_id: { not: null }, state: { in: ["pending", "synced"] }, sync_jobs: { none: { kind: "to_drive", status: { in: ["queued", "running"] } } } },
       select: { id: true },
     });
     for (const r of noDrive) await enqueue(r.id, "to_drive");

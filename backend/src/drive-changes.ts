@@ -70,10 +70,16 @@ export async function applyChanges(changes: google.DriveChange[]): Promise<numbe
     } catch (e) {
       const message = `Couldn't apply a Drive change: ${(e instanceof Error ? e.message : String(e)).slice(0, 400)}`;
       console.warn(`[drive-changes] ${row.id}: ${message}`);
-      await prisma.resume_files.update({ where: { id: row.id }, data: { state: "failed", last_error: message, updated_at: new Date() } });
+      await markFailed(row.id, message);
     }
   }
   return applied;
+}
+
+/** Records an error; conflict and deletion states win over "failed" because they already need a person (same rule as the job queue). */
+async function markFailed(id: string, message: string) {
+  await prisma.$executeRaw`update resume_files set last_error = ${message}, updated_at = now(),
+    state = case when state in ('pending', 'synced') then 'failed' else state end where id = ${id}::uuid`;
 }
 
 export async function portalPending(resumeFileId: string): Promise<PortalPending> {
@@ -151,10 +157,7 @@ export async function applyChange(row: ResumeFileRow, ch: google.DriveChange) {
     else if (d.do === "check_removed") {
       try {
         await google.getFileMeta(row.drive_file_id!);
-        await prisma.resume_files.update({
-          where: { id: row.id },
-          data: { state: "failed", last_error: "Lost access to the Drive file (it exists but the connected account can't see it)", updated_at: new Date() },
-        });
+        await markFailed(row.id, "Lost access to the Drive file (it exists but the connected account can't see it)");
       } catch (e) {
         if (e instanceof HttpError && e.status === 404) await startDeletion(row.id, "drive");
         else throw e;

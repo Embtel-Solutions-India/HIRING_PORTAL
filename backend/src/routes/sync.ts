@@ -84,7 +84,7 @@ export default async function syncRoutes(app: FastifyInstance) {
         break;
       }
       case "restore":
-        await restoreResume(row);
+        await restoreResume(row, user.id);
         await logActivity(user.id, "settings_changed", `restored the resume ${row.file_name}`);
         break;
       case "delete-now":

@@ -69,3 +69,9 @@ export function tint(hex: string, alpha: number) {
   const b = n & 255;
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
+
+/** What happens to a deleted candidate's resume, for delete confirmations. */
+export const resumeKeptNote = (system: { s3Configured?: boolean; resumeGraceDays?: number } | undefined, plural: boolean) =>
+  system?.s3Configured
+    ? `Their ${plural ? "resumes are" : "resume is"} kept for ${system.resumeGraceDays ?? 30} days and can be restored by an Admin.`
+    : `${plural ? "Resumes stay" : "The resume stays"} in Google Drive.`;

@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { prisma } from "../src/db.ts";
 import { applyChanges, flagConflict } from "../src/drive-changes.ts";
 import { HttpError } from "../src/http.ts";
-import { markCandidatesDeleted, restoreResume } from "../src/resume-files.ts";
+import { config } from "../src/config.ts";
+import { markCandidatesDeleted, restoreResume, trackDriveImport } from "../src/resume-files.ts";
 import { claimNext, enqueue, fail, resetRunning, retryRow } from "../src/sync-queue.ts";
 import { resolveConflict, runJob } from "../src/sync-jobs.ts";
 
@@ -187,8 +188,11 @@ const runOne = async (id: string, kind: string) => {
   const pend = await fresh(r.id);
   assert.equal(pend.state, "pending_deletion");
   assert.equal((pend.conflict as { on: string }).on, "content", "R6: conflict kept");
-  await restoreResume(pend);
-  assert.equal((await fresh(r.id)).state, "conflict", "R6: restore returns to conflict");
+  await restoreResume(pend, null);
+  const back = await fresh(r.id);
+  assert.equal(back.state, "conflict", "R6: restore returns to conflict");
+  assert.ok(back.candidate_id, "R6: restore recreates a candidate");
+  await prisma.candidates.delete({ where: { id: back.candidate_id! } });
   console.log("R6 ok");
 }
 
@@ -204,6 +208,50 @@ const runOne = async (id: string, kind: string) => {
   assert.equal(after.attempts, 0, "R7: no attempt used");
   assert.ok(after.run_after > new Date(Date.now() + 10 * 60_000), "R7: waits a while");
   console.log("R7 ok");
+}
+
+// P1: a Drive change that fails doesn't knock a resume out of conflict (or its deletion countdown).
+{
+  await clearQueue();
+  const r = await mk({ state: "conflict", conflict: { on: "content" } });
+  await applyChanges([{ fileId: r.drive_file_id!, removed: true }]);
+  const after = await fresh(r.id);
+  assert.equal(after.state, "conflict", "P1: conflict kept");
+  assert.ok(after.last_error, "P1: error still recorded");
+  console.log("P1 ok");
+}
+
+// P2: a portal-deleted resume that only exists in S3 can be restored (as a new candidate).
+{
+  await clearQueue();
+  const r = await mk({ drive_file_id: null, drive_md5: null, drive_name: null, state: "pending_deletion", deleted_side: "portal", delete_after: new Date(Date.now() + 86_400_000) });
+  await restoreResume(r, null);
+  const after = await fresh(r.id);
+  assert.equal(after.state, "synced", "P2: restored");
+  assert.ok(after.candidate_id, "P2: has a candidate again");
+  const cand = await prisma.candidates.findUniqueOrThrow({ where: { id: after.candidate_id! } });
+  assert.equal((cand.resume as { resumeFileId?: string }).resumeFileId, r.id, "P2: candidate points at the S3 resume");
+  await prisma.resume_files.delete({ where: { id: r.id } });
+  await prisma.candidates.delete({ where: { id: cand.id } });
+  console.log("P2 ok");
+}
+
+// P5: re-importing a Drive file clears any stale conflict on its row.
+{
+  await clearQueue();
+  const s3Was = { ...config.s3 };
+  Object.assign(config.s3, { region: "x", bucket: "x", accessKeyId: "x", secretAccessKey: "x" });
+  const stage = (await prisma.stages.findFirst())!;
+  const cand = await prisma.candidates.create({ data: { first_name: "P5", stage_id: stage.id } });
+  const r = await mk({ candidate_id: null, state: "synced", conflict: { on: "content" } });
+  await trackDriveImport(cand.id, { drive_file_id: r.drive_file_id!, file_name: "cv.pdf", mime_type: PDF });
+  Object.assign(config.s3, s3Was);
+  const after = await fresh(r.id);
+  assert.equal(after.conflict, null, "P5: stale conflict cleared");
+  assert.equal(after.candidate_id, cand.id);
+  await prisma.resume_files.delete({ where: { id: r.id } });
+  await prisma.candidates.delete({ where: { id: cand.id } });
+  console.log("P5 ok");
 }
 
 await prisma.resume_files.deleteMany({ where: { drive_file_id: { startsWith: PREFIX } } });
