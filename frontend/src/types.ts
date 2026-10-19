@@ -147,6 +147,23 @@ export interface Application {
   createdAt: string;
 }
 
+export interface StageTransition {
+  id: string;
+  applicationId: string;
+  /** "" when the application was created (entered the pipeline). */
+  fromStageId: string;
+  toStageId: string;
+  actorId: string;
+  reasonLabel: string;
+  note: string;
+  createdAt: string;
+}
+
+export interface CandidateHistory {
+  transitions: StageTransition[];
+  activity: ActivityEvent[];
+}
+
 export interface RejectionReason {
   id: string;
   label: string;

@@ -13,6 +13,7 @@ import Interviews from "./pages/Interviews";
 import Jobs from "./pages/Jobs";
 import Login from "./pages/Login";
 import Pipeline from "./pages/Pipeline";
+import Resumes from "./pages/Resumes";
 import Review from "./pages/Review";
 import Settings from "./pages/Settings";
 import Team from "./pages/Team";
@@ -67,6 +68,14 @@ export default function App() {
         <Route path="candidates" element={<Candidates />} />
         <Route path="candidates/:id" element={<CandidateDetail />} />
         <Route path="review" element={<Review />} />
+        <Route
+          path="resumes"
+          element={
+            <RequirePermission permission="resumes.download">
+              <Resumes />
+            </RequirePermission>
+          }
+        />
         <Route path="interviews" element={<Interviews />} />
         <Route
           path="email"

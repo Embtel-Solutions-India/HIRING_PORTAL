@@ -68,6 +68,31 @@ export default async function candidateRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  /** A person's full record: every stage move of every application, and all activity (not capped like bootstrap). */
+  app.get("/api/candidates/:id/history", async (req) => {
+    const user = requirePerm(req, "candidates.view");
+    const { id } = req.params as { id: string };
+    if (!isUuid(id)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    const [transitions, activity] = await Promise.all([
+      prisma.stage_transitions.findMany({ where: { applications: { candidate_id: id } }, orderBy: { created_at: "asc" } }),
+      prisma.activity.findMany({ where: { candidate_id: id }, orderBy: { created_at: "desc" } }),
+    ]);
+    return {
+      transitions: transitions.map((t) => ({
+        id: t.id,
+        applicationId: t.application_id,
+        fromStageId: t.from_stage_id ?? "",
+        toStageId: t.to_stage_id,
+        actorId: t.actor_id ?? "",
+        reasonLabel: t.reason_label ?? "",
+        note: t.note ?? "",
+        createdAt: t.created_at,
+      })),
+      activity: activity.map((a) => ({ id: a.id, actorId: a.actor_id ?? "system", type: a.type, candidateId: a.candidate_id ?? undefined, message: a.message, createdAt: a.created_at })),
+    };
+  });
+
   app.post("/api/candidates/delete", async (req) => {
     const user = requirePerm(req, "candidates.delete");
     const { ids } = z.object({ ids: z.array(z.string().uuid()).min(1) }).parse(req.body);

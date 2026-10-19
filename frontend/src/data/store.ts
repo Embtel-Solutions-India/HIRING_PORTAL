@@ -10,6 +10,7 @@ import type {
   Application,
   BookingLink,
   Candidate,
+  CandidateHistory,
   DriveInboxFile,
   EmailCampaign,
   EmailTemplate,
@@ -82,6 +83,8 @@ interface Actions {
   toggleStar: (applicationId: string) => Promise<boolean>;
   deleteCandidates: (ids: string[]) => Promise<boolean>;
   resummarize: (applicationId: string) => Promise<boolean>;
+  /** Not kept in the store: the profile page loads it on its own. */
+  fetchHistory: (candidateId: string) => Promise<CandidateHistory | null>;
   uploadResumes: (files: File[], jobId: string, sourceId: string) => Promise<{ created: string[]; rejected: string[] } | null>;
   replaceResume: (candidateId: string, file: File) => Promise<boolean>;
   renameResume: (candidateId: string, fileName: string) => Promise<boolean>;
@@ -288,6 +291,7 @@ export const useStore = create<Store>()((set, get) => {
       set((s) => ({ candidates: s.candidates.filter((c) => !ids.includes(c.id)), applications: s.applications.filter((a) => !ids.includes(a.candidateId)) }));
       return ok("Couldn't delete", () => api.post("/api/candidates/delete", { ids }));
     },
+    fetchHistory: (candidateId) => api.get<CandidateHistory>(`/api/candidates/${candidateId}/history`).catch(() => null),
     resummarize: (applicationId) => ok("Couldn't restart summary", () => api.post(`/api/applications/${applicationId}/resummarize`)),
 
     uploadResumes: (files, jobId, sourceId) =>

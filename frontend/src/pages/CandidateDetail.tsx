@@ -1,14 +1,16 @@
 import { parseISO } from "date-fns";
 import { ArrowLeft, CalendarPlus, ChevronLeft, ChevronRight, Mail, MapPin, MoreHorizontal, Phone, Star, Trash2, Video, XCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { ApplicationCard } from "../components/ApplicationCard";
 import { ContactRow, MoveStageMenu, ResumePreview, SummaryCard } from "../components/candidate";
 import { ComposeEmailModal } from "../components/ComposeEmailModal";
 import { ScheduleInterviewModal } from "../components/ScheduleInterviewModal";
-import { Avatar, AvatarStack, Badge, Button, EmptyState, IconButton, Menu, MenuItem, StageBadge, Stars, Tabs } from "../components/ui";
+import { Avatar, AvatarStack, Badge, Button, EmptyState, IconButton, Menu, MenuItem, Select, StageBadge, Stars, Tabs } from "../components/ui";
 import { SourceBadge, SourcePicker } from "../components/SourcePicker";
 import { useApplicationsOf, useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
-import { cn, daysSince, fmtDate, fmtDayLabel, fmtTime, fullName, timeAgo, resumeKeptNote } from "../lib/utils";
+import type { CandidateHistory } from "../types";
+import { fmtDate, fmtDayLabel, fmtTime, fullName, timeAgo, resumeKeptNote } from "../lib/utils";
 
 export default function CandidateDetail() {
   const { id } = useParams();
@@ -39,13 +41,28 @@ export default function CandidateDetail() {
   const canDelete = useCan("candidates.delete");
 
   const [note, setNote] = useState("");
+  const [noteAppId, setNoteAppId] = useState("");
   const [tab, setTab] = useState<"notes" | "interviews" | "emails" | "activity">("notes");
   const [emailOpen, setEmailOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
+  const fetchHistory = useStore((s) => s.fetchHistory);
   const c = candidates.find((x) => x.id === id);
-  // The newest application is the one this page acts on (the stepper, stage menu, rating and star).
-  const app = useApplicationsOf(id)[0];
+  const apps = useApplicationsOf(id);
+  // The header (stage menu, reject, rating, star) and the AI summary act on the selected application; the newest by default.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const app = apps.find((a) => a.id === selectedId) ?? apps[0];
+  const [history, setHistory] = useState<CandidateHistory | null>(null);
+  // Reload the full history whenever something about this person changes.
+  const version = `${id}|${c?.notes.length}|${apps.map((a) => `${a.id}:${a.stageId}:${a.lastActivityAt}`).join(",")}`;
+  useEffect(() => {
+    let live = true;
+    if (id) void fetchHistory(id).then((h) => live && h && setHistory(h));
+    return () => {
+      live = false;
+    };
+  }, [version, id, fetchHistory]);
   const siblings = useMemo(() => (app ? applications.filter((a) => a.jobId === app.jobId).map((a) => a.candidateId) : []), [applications, app]);
 
   if (!c || !app) {
@@ -55,12 +72,12 @@ export default function CandidateDetail() {
   const pos = siblings.indexOf(c.id);
   const prev = siblings[pos - 1];
   const next = siblings[pos + 1];
-  const myInterviews = interviews.filter((i) => i.candidateId === c.id);
+  const myInterviews = interviews.filter((i) => i.candidateId === c.id).sort((a, b) => apps.findIndex((x) => x.id === a.applicationId) - apps.findIndex((x) => x.id === b.applicationId) || a.start.localeCompare(b.start));
   const myEmails = campaigns.filter((e) => e.recipientIds.includes(c.id));
-  const myActivity = activity.filter((a) => a.candidateId === c.id);
-  const stepStages = stages.filter((s) => s.kind !== "closed");
-  const currentIdx = stepStages.findIndex((s) => s.id === app.stageId);
+  const myActivity = history?.activity ?? activity.filter((a) => a.candidateId === c.id);
   const closed = stageMap[app.stageId]?.kind === "closed";
+  const isExpanded = (appId: string) => expanded[appId] ?? appId === apps[0]?.id;
+  const jobOf = (appId: string) => jobMap[apps.find((a) => a.id === appId)?.jobId ?? ""]?.title;
   const closedStage = stages.find((s) => s.kind === "closed");
 
   return (
@@ -164,32 +181,24 @@ export default function CandidateDetail() {
           </div>
         </div>
 
-        {/* Stage stepper */}
-        <ol className="scroll-slim mt-5 flex gap-1 overflow-x-auto pb-1">
-          {stepStages.map((s, i) => {
-            const reached = !closed && i <= currentIdx;
-            const isCurrent = s.id === app.stageId;
-            return (
-              <li key={s.id} className="min-w-[110px] flex-1">
-                <button
-                  disabled={!canMove || isCurrent}
-                  onClick={() => {
-                    const from = app.stageId;
-                    moveStage([app.id], s.id);
-                    toast(`Moved to ${s.name}`, "success", { label: "Undo", onClick: () => moveStage([app.id], from) });
-                  }}
-                  className="group w-full text-left disabled:cursor-default"
-                  title={isCurrent ? "Current stage" : `Move to ${s.name}`}
-                >
-                  <span className={cn("block h-1.5 rounded-full transition", reached ? "" : "bg-sunken group-hover:bg-line-strong")} style={reached ? { background: s.color } : undefined} />
-                  <span className={cn("mt-1.5 block truncate text-[12px] font-semibold", isCurrent ? "text-ink" : reached ? "text-ink-2" : "text-faint")}>{s.name}</span>
-                  {isCurrent && <span className="block text-[11px] text-muted">{daysSince(app.stageEnteredAt)} days in stage</span>}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-        {closed && <p className="mt-2 text-[13px] font-semibold text-danger">Marked “{stageMap[app.stageId]?.name}” {timeAgo(app.stageEnteredAt)}</p>}
+        {/* Applications: one per job, newest first */}
+        <div className="mt-5 space-y-2">
+          {apps.length > 1 && <p className="label">{apps.length} applications</p>}
+          {apps.map((a) => (
+            <ApplicationCard
+              key={a.id}
+              app={a}
+              transitions={(history?.transitions ?? []).filter((t) => t.applicationId === a.id)}
+              expanded={isExpanded(a.id)}
+              selected={a.id === app.id}
+              onToggle={() => setExpanded((e) => ({ ...e, [a.id]: !isExpanded(a.id) }))}
+              onSelect={() => {
+                setSelectedId(a.id);
+                setExpanded((e) => ({ ...e, [a.id]: true }));
+              }}
+            />
+          ))}
+        </div>
       </section>
 
       <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.2fr_1fr]">
@@ -220,12 +229,20 @@ export default function CandidateDetail() {
                       onSubmit={(e) => {
                         e.preventDefault();
                         if (!note.trim()) return;
-                        addNote(c.id, note.trim(), app.id);
+                        addNote(c.id, note.trim(), noteAppId || app.id);
                         setNote("");
                       }}
                     >
                       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="Share feedback with the team… (visible to everyone with access)" className="field resize-none" aria-label="New note" />
-                      <div className="mt-2 flex justify-end">
+                      <div className="mt-2 flex items-center justify-end gap-2">
+                        {apps.length > 1 && (
+                          <Select
+                            ariaLabel="Job this note is about"
+                            value={noteAppId || app.id}
+                            onChange={setNoteAppId}
+                            options={apps.map((a) => ({ value: a.id, label: jobMap[a.jobId]?.title ?? "No job" }))}
+                          />
+                        )}
                         <Button type="submit" size="sm" variant="primary" disabled={!note.trim()}>
                           Add note
                         </Button>
@@ -243,6 +260,7 @@ export default function CandidateDetail() {
                         <div className="min-w-0 flex-1">
                           <p className="text-[13px]">
                             <b className="font-semibold">{a?.name ?? (fromBooking ? "From the booking page" : "Deleted user")}</b> <span className="text-xs text-faint">· {timeAgo(n.createdAt)}</span>
+                            {n.applicationId && jobOf(n.applicationId) && <Badge className="ml-1.5">{jobOf(n.applicationId)}</Badge>}
                           </p>
                           <p className="mt-0.5 text-[13.5px] leading-relaxed text-ink-2">{n.body}</p>
                         </div>
@@ -257,8 +275,10 @@ export default function CandidateDetail() {
                   {myInterviews.length === 0 && (
                     <EmptyState icon={<CalendarPlus size={18} />} title="No interviews yet" action={<Button size="sm" onClick={() => setScheduleOpen(true)}>Schedule one</Button>} />
                   )}
-                  {myInterviews.map((iv) => (
-                    <div key={iv.id} className="rounded-xl border border-line p-3">
+                  {myInterviews.map((iv, i) => (
+                    <div key={iv.id}>
+                    {apps.length > 1 && myInterviews[i - 1]?.applicationId !== iv.applicationId && <p className="label mt-2 mb-1.5">{jobOf(iv.applicationId) ?? "No job"}</p>}
+                    <div className="rounded-xl border border-line p-3">
                       <div className="flex items-center gap-3">
                         <span className="flex size-9 items-center justify-center rounded-lg bg-paper text-ink-2 ring-1 ring-line">
                           {iv.type === "video" ? <Video size={16} /> : iv.type === "phone" ? <Phone size={16} /> : <MapPin size={16} />}
@@ -282,6 +302,7 @@ export default function CandidateDetail() {
                           <b className="font-semibold">{teamMap[f.authorId]?.name.split(" ")[0]}:</b> {f.recommendation.replace("_", " ")} — {f.comment}
                         </p>
                       ))}
+                    </div>
                     </div>
                   ))}
                 </div>
