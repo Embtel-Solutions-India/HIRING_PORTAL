@@ -148,6 +148,19 @@ async function toDrive(job: JobRow, row: ResumeFileRow) {
   if (followUpRename) await enqueue(row.id, "rename_s3", { name: followUpRename });
 }
 
+/** The person got a newer application: their one Drive file moves to that job's folder. */
+async function moveDrive(job: JobRow, row: ResumeFileRow) {
+  if (!row.drive_file_id) return complete(job.id, prisma, "skipped: no Drive file yet (to_drive will use the right folder)");
+  if (!(await google.isConnected())) throw new Error("Google Drive isn't connected");
+  const folder = await folderForRow(row);
+  const meta = await google.getFileMeta(row.drive_file_id);
+  if (!(meta.parents ?? []).includes(folder)) await google.moveFile(row.drive_file_id, folder);
+  // A move bumps the Drive version; record it so the change feed doesn't take it for an edit.
+  const after = await google.getFileMeta(row.drive_file_id);
+  await prisma.resume_files.update({ where: { id: row.id }, data: { drive_version: after.version ?? null, updated_at: new Date() } });
+  return complete(job.id, prisma);
+}
+
 async function renameDrive(job: JobRow, row: ResumeFileRow) {
   if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
   if (!row.drive_file_id) return complete(job.id, prisma, "skipped: no Drive file yet (to_drive will use the name)");
@@ -246,6 +259,8 @@ export async function runJob(job: JobRow) {
       return toDrive(job, row);
     case "rename_drive":
       return renameDrive(job, row);
+    case "move_drive":
+      return moveDrive(job, row);
     default:
       throw new Error(`Unknown job kind ${job.kind}`);
   }

@@ -83,6 +83,10 @@ interface Actions {
   toggleStar: (applicationId: string) => Promise<boolean>;
   deleteCandidates: (ids: string[]) => Promise<boolean>;
   resummarize: (applicationId: string) => Promise<boolean>;
+  keepSeparate: (candidateId: string) => Promise<boolean>;
+  mergeCandidate: (dupId: string, targetId: string) => Promise<boolean>;
+  /** A new application for an existing person; resolves to its id. */
+  considerForJob: (candidateId: string, jobId: string) => Promise<string | null>;
   /** Not kept in the store: the profile page loads it on its own. */
   fetchHistory: (candidateId: string) => Promise<CandidateHistory | null>;
   uploadResumes: (files: File[], jobId: string, sourceId: string) => Promise<{ created: string[]; rejected: string[] } | null>;
@@ -291,6 +295,12 @@ export const useStore = create<Store>()((set, get) => {
       set((s) => ({ candidates: s.candidates.filter((c) => !ids.includes(c.id)), applications: s.applications.filter((a) => !ids.includes(a.candidateId)) }));
       return ok("Couldn't delete", () => api.post("/api/candidates/delete", { ids }));
     },
+    keepSeparate: (candidateId) => {
+      set((s) => ({ candidates: s.candidates.map((c) => (c.id === candidateId ? { ...c, possibleDuplicateOf: "" } : c)) }));
+      return ok("Couldn't update", () => api.post(`/api/candidates/${candidateId}/keep-separate`));
+    },
+    mergeCandidate: (dupId, targetId) => ok("Couldn't merge", () => api.post(`/api/candidates/${dupId}/merge-into/${targetId}`)),
+    considerForJob: async (candidateId, jobId) => (await run("Couldn't add to that job", () => api.post<{ id: string }>(`/api/candidates/${candidateId}/applications`, { jobId })))?.id ?? null,
     fetchHistory: (candidateId) => api.get<CandidateHistory>(`/api/candidates/${candidateId}/history`).catch(() => null),
     resummarize: (applicationId) => ok("Couldn't restart summary", () => api.post(`/api/applications/${applicationId}/resummarize`)),
 

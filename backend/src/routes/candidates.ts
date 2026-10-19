@@ -2,18 +2,18 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ResumeFile } from "../../../frontend/src/types.ts";
 import { logActivity, touchCandidate } from "../activity.ts";
-import { addNote } from "../applications.ts";
+import { addNote, createApplication, keepSeparate, mergeCandidate } from "../applications.ts";
 import { prisma } from "../db.ts";
 import { config } from "../config.ts";
 import * as google from "../google.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
-import { createCandidate, enqueueParse } from "../pipeline.ts";
-import { markCandidatesDeleted, renameInS3, syncCandidateResume } from "../resume-files.ts";
+import { createCandidate } from "../pipeline.ts";
+import { editableResumeRow, markCandidatesDeleted, renameInS3, replaceResumeFile } from "../resume-files.ts";
 import { docxToHtml } from "../resume.ts";
 import * as s3 from "../s3.ts";
-import { mimeFor, readResume, storeResume } from "../storage.ts";
+import { readResume, storeResume } from "../storage.ts";
 import { enqueue } from "../sync-queue.ts";
-import { digest, keyPrefix, safeKeyName } from "../sync-rules.ts";
+import { digest } from "../sync-rules.ts";
 
 const PatchBody = z
   .object({
@@ -66,6 +66,47 @@ export default async function candidateRoutes(app: FastifyInstance) {
     await addNote({ candidateId: id, applicationId, body, actorId: user.id });
     await logActivity(user.id, "note", `added a note on ${fullName(c!)}`, id);
     return { ok: true };
+  });
+
+  /** The flagged look-alike is the same person: fold this record into it. */
+  app.post("/api/candidates/:id/merge-into/:targetId", async (req) => {
+    const user = requirePerm(req, "candidates.moveStage");
+    const { id, targetId } = req.params as { id: string; targetId: string };
+    if (!isUuid(id) || !isUuid(targetId)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    await assertCandidateAccess(user, targetId);
+    await mergeCandidate(id, targetId, user.id);
+    return { ok: true };
+  });
+
+  /** A recruiter says the flagged look-alike is a different person. */
+  app.post("/api/candidates/:id/keep-separate", async (req) => {
+    const user = requirePerm(req, "candidates.edit");
+    const { id } = req.params as { id: string };
+    if (!isUuid(id)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    const c = await prisma.candidates.findUnique({ where: { id }, select: { possible_duplicate_of: true } });
+    if (c?.possible_duplicate_of) await keepSeparate(id, c.possible_duplicate_of);
+    return { ok: true };
+  });
+
+  /** Considers an existing person for another job: a new application; earlier ones keep their outcome. */
+  app.post("/api/candidates/:id/applications", async (req) => {
+    const user = requirePerm(req, "candidates.moveStage");
+    const { id } = req.params as { id: string };
+    if (!isUuid(id)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    const { jobId } = z.object({ jobId: z.string().uuid() }).parse(req.body);
+    const [c, job] = await Promise.all([
+      prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } }),
+      prisma.jobs.findUnique({ where: { id: jobId }, select: { title: true } }),
+    ]);
+    if (!job) throw new HttpError(400, "Unknown job");
+    const appId = await createApplication({ candidateId: id, jobId, actorId: user.id });
+    await logActivity(user.id, "stage_change", `considered ${fullName(c!)} for ${job.title}`, id);
+    const rf = await prisma.resume_files.findUnique({ where: { candidate_id: id }, select: { id: true } });
+    if (rf && (await google.isConnected())) await enqueue(rf.id, "move_drive");
+    return { id: appId };
   });
 
   /** A person's full record: every stage move of every application, and all activity (not capped like bootstrap). */
@@ -186,43 +227,16 @@ export default async function candidateRoutes(app: FastifyInstance) {
   async function editableResume(user: Parameters<typeof assertCandidateAccess>[0], id: string) {
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     await assertCandidateAccess(user, id);
-    const row = await prisma.resume_files.findUnique({ where: { candidate_id: id } });
-    if (!row?.s3_key) throw new HttpError(409, "This resume hasn't been copied to S3 yet — try again once the migration has finished");
-    if (row.state === "conflict" || row.state === "pending_deletion") throw new HttpError(409, "This resume has a sync issue — resolve it in Settings → Resume sync first");
-    return row;
+    return editableResumeRow(id);
   }
 
   app.post("/api/candidates/:id/resume", async (req) => {
     const user = requirePerm(req, "candidates.edit");
     const { id } = req.params as { id: string };
-    const row = await editableResume(user, id);
+    await editableResume(user, id);
     const part = await req.file();
     if (!part || !/\.(pdf|docx)$/i.test(part.filename)) throw new HttpError(400, "Upload a PDF or Word (.docx) file");
-    const data = await part.toBuffer();
-    const { sha256, md5 } = digest(data);
-    const mimeType = mimeFor(part.filename);
-    const key = `${keyPrefix(row.s3_key!)}/${safeKeyName(part.filename)}`;
-    const versionId = await s3.putVerified(key, data, mimeType, sha256);
-    await prisma.$transaction(async (tx) => {
-      // Only if the sync worker didn't change the resume while we uploaded; otherwise its change would be lost.
-      const { count } = await tx.resume_files.updateMany({
-        where: { id: row.id, s3_key: row.s3_key, s3_version_id: row.s3_version_id, state: { notIn: ["conflict", "pending_deletion"] } },
-        data: { s3_key: key, s3_version_id: versionId, sha256, size_bytes: data.length, file_name: part.filename, mime_type: mimeType, state: "pending", updated_at: new Date() },
-      });
-      if (!count) throw new HttpError(409, "The resume was just updated from Google Drive — check it and try again");
-      const u = await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } });
-      await syncCandidateResume(tx, u);
-      await tx.candidates.update({ where: { id }, data: { parse_status: "pending" } });
-      await enqueue(row.id, "to_drive", { md5 }, tx);
-      if (part.filename !== row.drive_name) await enqueue(row.id, "rename_drive", { name: part.filename }, tx);
-    }).catch(async (e) => {
-      // Lost the race: drop just our upload, never the worker's version.
-      await s3.remove(key, versionId).catch(() => {});
-      throw e;
-    });
-    if (key !== row.s3_key) await s3.remove(row.s3_key!).catch((e) => console.warn("[resume] couldn't remove old key", e));
-    enqueueParse(id);
-    await touchCandidate(id);
+    await replaceResumeFile(id, { fileName: part.filename, data: await part.toBuffer() });
     await logActivity(user.id, "resume_upload", `replaced the resume with ${part.filename}`, id);
     return { ok: true };
   });

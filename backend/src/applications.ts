@@ -4,8 +4,12 @@
  */
 import { logActivity, touch, touchCandidate } from "./activity.ts";
 import { prisma } from "./db.ts";
+import * as google from "./google.ts";
 import { HttpError } from "./http.ts";
-import type { Db } from "./sync-queue.ts";
+import { markCandidatesDeleted, replaceResumeFile } from "./resume-files.ts";
+import { readResume } from "./storage.ts";
+import { enqueue, type Db } from "./sync-queue.ts";
+import type { ResumeFile } from "../../frontend/src/types.ts";
 
 const fullName = (c: { first_name: string; last_name: string }) => `${c.first_name} ${c.last_name}`.trim();
 
@@ -111,4 +115,81 @@ export async function updateApplication(id: string, patch: { rating?: number; st
     const a = await prisma.applications.findUnique({ where: { id }, select: { candidate_id: true, candidates: { select: { first_name: true, last_name: true } } } });
     if (a) await logActivity(actorId, "candidate_updated", `updated the ${[patch.ownerId !== undefined && "owner", patch.jobId !== undefined && "job"].filter(Boolean).join(" and ")} for ${fullName(a.candidates)}`, a.candidate_id);
   }
+}
+
+/**
+ * The older candidate this one looks like: same email (ignoring case and spaces) or the same last 10 digits of
+ * phone. Blank or short values never match, and pairs a recruiter kept separate are skipped.
+ */
+export async function findDuplicate(candidateId: string): Promise<string | null> {
+  const [row] = await prisma.$queryRaw<{ id: string }[]>`
+    select o.id from candidates c join candidates o
+      on (o.created_at, o.id) < (c.created_at, c.id)
+     and not (o.id = any(c.kept_separate_from)) and not (c.id = any(o.kept_separate_from))
+     and ((lower(trim(c.email)) <> '' and lower(trim(o.email)) = lower(trim(c.email)))
+       or (length(regexp_replace(c.phone, '[^0-9]', '', 'g')) >= 10
+           and right(regexp_replace(o.phone, '[^0-9]', '', 'g'), 10) = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)))
+    where c.id = ${candidateId}::uuid
+    order by o.created_at asc limit 1`;
+  return row?.id ?? null;
+}
+
+/** A recruiter confirmed these are two different people. */
+export async function keepSeparate(candidateId: string, otherId: string) {
+  await prisma.$executeRaw`update candidates set possible_duplicate_of = null,
+    kept_separate_from = array_append(array_remove(kept_separate_from, ${otherId}::uuid), ${otherId}::uuid) where id = ${candidateId}::uuid`;
+}
+
+/**
+ * Folds a duplicate record into the person it duplicates. Their applications move over; one for a job the target
+ * already has open is folded into the target's (its interviews and notes follow, the target's stage and history win).
+ * The duplicate's newer resume becomes the target's current version. The file step runs first, so if it fails
+ * nothing has changed yet.
+ */
+export async function mergeCandidate(dupId: string, targetId: string, actorId: string | null) {
+  if (dupId === targetId) throw new HttpError(400, "A candidate can't be merged into itself");
+  const [dup, target] = await Promise.all([
+    prisma.candidates.findUnique({ where: { id: dupId }, select: { first_name: true, last_name: true, resume: true } }),
+    prisma.candidates.findUnique({ where: { id: targetId }, select: { first_name: true, last_name: true } }),
+  ]);
+  if (!dup || !target) throw new HttpError(404, "Candidate not found");
+
+  // ponytail: only an S3-backed resume can be swapped in place; otherwise the target keeps its file and the
+  // duplicate's goes into the normal deletion grace period (restorable from Settings → Resume sync).
+  const [dupFile, targetFile] = await Promise.all([
+    prisma.resume_files.findUnique({ where: { candidate_id: dupId } }),
+    prisma.resume_files.findUnique({ where: { candidate_id: targetId } }),
+  ]);
+  if (dupFile?.s3_key && targetFile?.s3_key) {
+    const { data } = await readResume(dup.resume as unknown as ResumeFile);
+    await replaceResumeFile(targetId, { fileName: dupFile.file_name, data });
+  }
+
+  const moved = await prisma.$transaction(async (tx) => {
+    const targetOpen = await tx.applications.findMany({ where: { candidate_id: targetId, job_id: { not: null }, stages: { kind: "active" } }, select: { id: true, job_id: true } });
+    const openFor = new Map(targetOpen.map((a) => [a.job_id!, a.id]));
+    let moved = 0;
+    for (const a of await tx.applications.findMany({ where: { candidate_id: dupId }, select: { id: true, job_id: true, stages: { select: { kind: true } } } })) {
+      const into = a.job_id && a.stages.kind === "active" ? openFor.get(a.job_id) : undefined;
+      if (into) {
+        await tx.interviews.updateMany({ where: { application_id: a.id }, data: { application_id: into } });
+        await tx.notes.updateMany({ where: { application_id: a.id }, data: { application_id: into } });
+        await tx.email_messages.updateMany({ where: { application_id: a.id }, data: { application_id: into } });
+        await tx.applications.delete({ where: { id: a.id } });
+      } else {
+        await tx.applications.update({ where: { id: a.id }, data: { candidate_id: targetId } });
+        moved++;
+      }
+    }
+    for (const table of [tx.notes, tx.interviews, tx.activity, tx.email_messages, tx.drive_files] as const)
+      await (table as typeof tx.notes).updateMany({ where: { candidate_id: dupId }, data: { candidate_id: targetId } });
+    await tx.candidates.update({ where: { id: targetId }, data: { possible_duplicate_of: null } });
+    await touch((await tx.applications.findMany({ where: { candidate_id: targetId }, select: { id: true } })).map((a) => a.id), tx);
+    return moved;
+  });
+
+  // A newer application may be for another job: the person's Drive file follows it.
+  if (moved && targetFile && (await google.isConnected())) await enqueue(targetFile.id, "move_drive");
+  await markCandidatesDeleted([dupId]);
+  await logActivity(actorId, "candidate_updated", `merged ${fullName(dup)} into ${fullName(target)}`, targetId);
 }

@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ResumeFile } from "../../frontend/src/types.ts";
 import { logActivity } from "./activity.ts";
 import { analyzeResume } from "./ai.ts";
-import { createApplication } from "./applications.ts";
+import { createApplication, findDuplicate } from "./applications.ts";
 import { prisma } from "./db.ts";
 import { basicParse, extractResumeText } from "./resume.ts";
 import { getSetting } from "./settings.ts";
@@ -114,6 +114,8 @@ async function parseCandidate(id: string, attempt = 1): Promise<void> {
       prisma.$executeRaw`update candidates set tags = array_remove(tags, 'New') where id = ${id}::uuid`,
       ...summaries,
     ]);
+    // Now that email/phone are known, flag a likely earlier record of the same person for a recruiter to check.
+    await prisma.candidates.updateMany({ where: { id }, data: { possible_duplicate_of: await findDuplicate(id) } });
   } catch (e) {
     const retryable = e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || e instanceof Anthropic.APIConnectionError;
     if (retryable && attempt < 4) {

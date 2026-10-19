@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "react-router-dom";
 import { ContactRow, resumeUrl, ResumePreview, SummaryCard } from "../components/candidate";
 import { prefetchDocx } from "../components/DocxViewer";
+import { DuplicateBanner } from "../components/DuplicateBanner";
 import { FeedbackForm } from "../components/FeedbackForm";
 import { prefetchPdf } from "../components/PdfViewer";
 import { SourceBadge } from "../components/SourcePicker";
@@ -508,6 +509,7 @@ function SwipeCard({
           <ResumePreview candidate={c} compact />
         </div>
         <div className={cn("scroll-slim min-h-0 space-y-3 overflow-y-auto p-4 sm:p-5", pane === "summary" ? "block" : "hidden lg:block")}>
+          <DuplicateBanner candidate={c} />
           <ContactRow candidate={c} />
           <SummaryCard candidate={c} app={app} />
           {c.notes.length > 0 && (

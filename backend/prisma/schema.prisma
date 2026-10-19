@@ -61,6 +61,7 @@ model candidates {
   created_at            DateTime         @default(now()) @db.Timestamptz(6)
   source_id             String?
   possible_duplicate_of String?          @db.Uuid
+  kept_separate_from    String[]         @default([]) @db.Uuid
   activity              activity[]
   applications          applications[]
   duplicate_of          candidates?      @relation("candidate_duplicates", fields: [possible_duplicate_of], references: [id], onDelete: SetNull, onUpdate: NoAction)

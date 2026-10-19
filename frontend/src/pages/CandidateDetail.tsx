@@ -1,10 +1,12 @@
 import { parseISO } from "date-fns";
-import { ArrowLeft, CalendarPlus, ChevronLeft, ChevronRight, Mail, MapPin, MoreHorizontal, Phone, Star, Trash2, Video, XCircle } from "lucide-react";
+import { ArrowLeft, CalendarPlus, ChevronLeft, ChevronRight, Mail, MapPin, MoreHorizontal, Phone, Star, Trash2, Video, XCircle, BriefcasePlus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApplicationCard } from "../components/ApplicationCard";
 import { ContactRow, MoveStageMenu, ResumePreview, SummaryCard } from "../components/candidate";
 import { ComposeEmailModal } from "../components/ComposeEmailModal";
+import { ConsiderForJobModal } from "../components/ConsiderForJobModal";
+import { DuplicateBanner } from "../components/DuplicateBanner";
 import { ScheduleInterviewModal } from "../components/ScheduleInterviewModal";
 import { Avatar, AvatarStack, Badge, Button, EmptyState, IconButton, Menu, MenuItem, Select, StageBadge, Stars, Tabs } from "../components/ui";
 import { SourceBadge, SourcePicker } from "../components/SourcePicker";
@@ -45,6 +47,7 @@ export default function CandidateDetail() {
   const [tab, setTab] = useState<"notes" | "interviews" | "emails" | "activity">("notes");
   const [emailOpen, setEmailOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [considerOpen, setConsiderOpen] = useState(false);
 
   const fetchHistory = useStore((s) => s.fetchHistory);
   const c = candidates.find((x) => x.id === id);
@@ -150,6 +153,11 @@ export default function CandidateDetail() {
                 Reject
               </Button>
             )}
+            {canMove && (
+              <Button icon={<BriefcasePlus size={15} />} onClick={() => setConsiderOpen(true)}>
+                Consider for another job
+              </Button>
+            )}
             <MoveStageMenu applicationIds={[app.id]} currentStageId={app.stageId} align="right" />
             {canDelete && (
               <Menu
@@ -180,6 +188,8 @@ export default function CandidateDetail() {
             )}
           </div>
         </div>
+
+        <DuplicateBanner candidate={c} className="mt-4" />
 
         {/* Applications: one per job, newest first */}
         <div className="mt-5 space-y-2">
@@ -348,6 +358,17 @@ export default function CandidateDetail() {
         </div>
       </div>
 
+      <ConsiderForJobModal
+        candidate={c}
+        apps={apps}
+        open={considerOpen}
+        onClose={() => setConsiderOpen(false)}
+        onAdded={(newId) => {
+          setConsiderOpen(false);
+          setSelectedId(newId);
+          setExpanded((e) => ({ ...e, [newId]: true }));
+        }}
+      />
       <ComposeEmailModal open={emailOpen} onClose={() => setEmailOpen(false)} recipientIds={[c.id]} />
       <ScheduleInterviewModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} candidateId={c.id} applicationId={app.id} />
     </>

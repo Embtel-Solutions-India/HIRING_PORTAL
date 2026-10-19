@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 
 export type SyncState = "pending" | "synced" | "conflict" | "failed" | "pending_deletion" | "deleted";
-export type JobKind = "to_s3" | "to_drive" | "rename_s3" | "rename_drive" | "stash_conflict" | "purge";
+export type JobKind = "to_s3" | "to_drive" | "rename_s3" | "rename_drive" | "stash_conflict" | "purge" | "move_drive";
 
 export const GOOGLE_DOC = "application/vnd.google-apps.document";
 export const MAX_ATTEMPTS = 8;
