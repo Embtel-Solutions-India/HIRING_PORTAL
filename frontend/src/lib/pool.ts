@@ -8,7 +8,7 @@ export interface PoolFilter {
   outcome: "" | Outcome;
   rejectedFromStageId: string;
   reasonId: string;
-  /** false hides people whose applications are all closed. */
+  /** false hides past candidates: people with no application in progress (all rejected or hired). */
   includeClosed: boolean;
 }
 
@@ -22,7 +22,7 @@ const outcomeOf = (app: Application, stages: Record<string, Stage>): Outcome => 
  * (with a job picked, only that job's applications count). Text search is on the person.
  */
 export function matchesPool(candidate: Candidate, apps: Application[], stages: Record<string, Stage>, f: PoolFilter): boolean {
-  if (!f.includeClosed && apps.every((a) => stages[a.stageId]?.kind === "closed")) return false;
+  if (!f.includeClosed && !apps.some((a) => stages[a.stageId]?.kind === "active")) return false;
   const term = f.q.trim().toLowerCase();
   if (term && ![candidate.firstName, candidate.lastName, candidate.email, candidate.currentTitle, candidate.currentCompany, candidate.location, ...candidate.skills, ...candidate.tags].join(" ").toLowerCase().includes(term)) return false;
   const filtered = !!(f.jobId || f.outcome || f.rejectedFromStageId || f.reasonId);

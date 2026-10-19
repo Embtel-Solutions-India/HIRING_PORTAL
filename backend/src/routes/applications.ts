@@ -27,6 +27,10 @@ export default async function applicationRoutes(app: FastifyInstance) {
   app.post("/api/applications/move", async (req) => {
     const user = requirePerm(req, "candidates.moveStage");
     const body = MoveBody.parse(req.body);
+    if (!can(user.role, "candidates.viewAll")) {
+      const owners = await prisma.applications.findMany({ where: { id: { in: body.ids } }, distinct: ["candidate_id"], select: { candidate_id: true } });
+      for (const o of owners) await assertCandidateAccess(user, o.candidate_id);
+    }
     const moved = await moveApplications({ ids: body.ids, stageId: body.stageId, actorId: user.id, reasonId: body.reasonId, note: body.note });
     let emailed = 0;
     const stage = await prisma.stages.findUnique({ where: { id: body.stageId }, select: { auto_email_template_id: true } });
@@ -51,8 +55,9 @@ export default async function applicationRoutes(app: FastifyInstance) {
 
   /** Re-reads the person's resume and re-scores their open applications. */
   app.post("/api/applications/:id/resummarize", async (req) => {
-    requirePerm(req, "candidates.edit");
+    const user = requirePerm(req, "candidates.edit");
     const a = await loadApplication((req.params as { id: string }).id);
+    await assertCandidateAccess(user, a.candidate_id);
     await prisma.candidates.updateMany({ where: { id: a.candidate_id }, data: { parse_status: "pending" } });
     enqueueParse(a.candidate_id);
     return { ok: true };

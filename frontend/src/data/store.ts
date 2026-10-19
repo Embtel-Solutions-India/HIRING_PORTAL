@@ -181,7 +181,7 @@ export const useStore = create<Store>()((set, get) => {
       return result;
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
-        set({ ...emptyData(), status: "anonymous" });
+        set({ ...emptyData(), status: "anonymous", rejectPrompt: null });
         return null;
       }
       get().toast(`${label}: ${errorMessage(e)}`, "error");
@@ -204,7 +204,7 @@ export const useStore = create<Store>()((set, get) => {
         await api.get("/api/auth/me");
         await get().refresh();
       } catch {
-        set({ ...emptyData(), status: "anonymous" });
+        set({ ...emptyData(), status: "anonymous", rejectPrompt: null });
       }
     },
 
@@ -214,7 +214,7 @@ export const useStore = create<Store>()((set, get) => {
           const { me, ...data } = await api.get<Bootstrap>("/api/bootstrap");
           set({ ...data, currentUserId: me.id, status: "ready" });
         } catch (e) {
-          if (e instanceof ApiError && e.status === 401) set({ ...emptyData(), status: "anonymous" });
+          if (e instanceof ApiError && e.status === 401) set({ ...emptyData(), status: "anonymous", rejectPrompt: null });
         } finally {
           inflight = null;
         }
@@ -241,7 +241,7 @@ export const useStore = create<Store>()((set, get) => {
 
     logout: async () => {
       await api.post("/api/auth/logout").catch(() => {});
-      set({ ...emptyData(), status: "anonymous" });
+      set({ ...emptyData(), status: "anonymous", rejectPrompt: null });
     },
 
     toast: (message, tone = "success", action) => {

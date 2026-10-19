@@ -36,6 +36,10 @@ const priyaApps = [app("priya", "A", "rejected", rejectedA)];
 assert.ok(!matchesPool(priya, priyaApps, stages, f({ includeClosed: false })), "all-closed person hidden");
 assert.ok(matchesPool(aman, amanApps, stages, f({ includeClosed: false })), "person with an open application stays");
 assert.ok(matchesPool(priya, priyaApps, stages, f()), "shown by default");
+// "Past candidates" are everyone not in process now: rejected and hired alike.
+const hiredOnly = [app("priya", "A", "hired")];
+assert.ok(!matchesPool(priya, hiredOnly, stages, f({ includeClosed: false })), "all-hired person hidden too");
+assert.ok(matchesPool(priya, hiredOnly, stages, f()), "hired shown by default");
 
 // Text search is on the person.
 assert.ok(matchesPool(aman, amanApps, stages, f({ q: "react" })), "skill search");

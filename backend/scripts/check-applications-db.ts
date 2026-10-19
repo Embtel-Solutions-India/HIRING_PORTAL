@@ -1,7 +1,7 @@
 // Run against a local database: DATABASE_URL=postgres://postgres:postgres@localhost:5433/hirely npm run check:applications-db
 // Database-level checks of applications, stage history, rejection reasons, reapply and merge.
 import assert from "node:assert/strict";
-import { addNote, createApplication, driveFolderJob, findDuplicate, keepSeparate, mergeCandidate, moveApplications, saveRejectionReasons, updateApplication } from "../src/applications.ts";
+import { addNote, createApplication, driveFolderJob, findDuplicate, keepSeparate, mergeCandidate, moveApplications, saveRejectionReasons, takesDuplicateFile, updateApplication } from "../src/applications.ts";
 import { prisma } from "../src/db.ts";
 import { createCandidate } from "../src/pipeline.ts";
 import { runJob } from "../src/sync-jobs.ts";
@@ -216,6 +216,32 @@ assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: appId }
   assert.equal((await prisma.sync_jobs.findFirstOrThrow({ where: { resume_file_id: rf.id, kind: "move_drive" } })).status, "done", "F4: skipped, not failed");
   await prisma.resume_files.delete({ where: { id: rf.id } });
   console.log("F4 ok");
+}
+
+// M2: a merge keeps whichever resume is newer
+{
+  const at = (iso: string) => ({ s3_key: "k", updated_at: new Date(iso) });
+  assert.equal(takesDuplicateFile(at("2026-10-02"), at("2026-10-01")), true, "M2: duplicate's newer file wins");
+  assert.equal(takesDuplicateFile(at("2026-10-01"), at("2026-10-02")), false, "M2: target's newer file stays");
+  assert.equal(takesDuplicateFile({ s3_key: null, updated_at: new Date() }, at("2026-10-01")), false, "M2: no S3 copy, no swap");
+  assert.equal(takesDuplicateFile(at("2026-10-02"), null), false, "M2: target without a file");
+  console.log("M2 ok");
+}
+
+// P1: changing an application's job follows the same rules as creating one, and its interviews follow
+{
+  const [j1, j2] = await Promise.all([prisma.jobs.create({ data: { title: "CHK P1" } }), prisma.jobs.create({ data: { title: "CHK P2" } })]);
+  const p = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "Patch" } });
+  const a1 = await createApplication({ candidateId: p.id, jobId: j1.id, actorId: null });
+  const a2 = await createApplication({ candidateId: p.id, jobId: j2.id, actorId: null });
+  await prisma.interviews.create({ data: { candidate_id: p.id, application_id: a1, job_id: j1.id, title: "CHK", type: "phone", start_at: new Date(), duration_min: 30 } });
+  await assert.rejects(updateApplication(a1, { jobId: j2.id }, null), /already has an open application/, "P1: second open application for J2 refused");
+  await moveApplications({ ids: [a2], stageId: closed, actorId: null, reasonId: "skills" });
+  await updateApplication(a1, { jobId: j2.id }, null);
+  assert.equal((await prisma.interviews.findFirstOrThrow({ where: { application_id: a1 } })).job_id, j2.id, "P1: interview moved to the new job");
+  await prisma.candidates.delete({ where: { id: p.id } });
+  await prisma.jobs.deleteMany({ where: { id: { in: [j1.id, j2.id] } } });
+  console.log("P1 ok");
 }
 
 // S1: createCandidate makes the person plus one open application with an entry transition

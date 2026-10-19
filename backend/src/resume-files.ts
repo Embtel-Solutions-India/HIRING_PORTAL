@@ -84,15 +84,16 @@ export async function replaceResumeFile(candidateId: string, file: { fileName: s
   await touchCandidate(candidateId);
 }
 
-/** Deletes candidates and starts their resumes' grace period, all or nothing. Conflicts are kept for a later restore. */
-export async function markCandidatesDeleted(ids: string[]): Promise<number> {
-  return prisma.$transaction(async (tx) => {
-    await tx.resume_files.updateMany({
+/** Deletes candidates and starts their resumes' grace period, all or nothing (inside `tx` when given). Conflicts are kept for a later restore. */
+export async function markCandidatesDeleted(ids: string[], tx?: Prisma.TransactionClient): Promise<number> {
+  const run = async (db: Prisma.TransactionClient) => {
+    await db.resume_files.updateMany({
       where: { candidate_id: { in: ids }, state: { not: "deleted" } },
       data: { state: "pending_deletion", deleted_side: "portal", delete_after: graceDate(), updated_at: new Date() },
     });
-    return (await tx.candidates.deleteMany({ where: { id: { in: ids } } })).count;
-  });
+    return (await db.candidates.deleteMany({ where: { id: { in: ids } } })).count;
+  };
+  return tx ? run(tx) : prisma.$transaction(run);
 }
 
 /** Admin "Restore" on a resume pending deletion. */

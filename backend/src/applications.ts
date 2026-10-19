@@ -118,7 +118,20 @@ export async function updateApplication(id: string, patch: { rating?: number; st
   const data = { rating: patch.rating, starred: patch.starred, owner_id: patch.ownerId, job_id: patch.jobId };
   if (Object.values(data).every((v) => v === undefined)) return;
   const meaningful = patch.ownerId !== undefined || patch.jobId !== undefined;
+  const current = await prisma.applications.findUnique({ where: { id }, select: { candidate_id: true, job_id: true, stages: { select: { kind: true } } } });
+  if (!current) throw new HttpError(404, "Application not found");
+  const jobChanged = patch.jobId !== undefined && patch.jobId !== current.job_id;
+  // Same rule as creating one: at most one open application per person per job.
+  if (jobChanged && patch.jobId && current.stages.kind === "active") {
+    const clash = await prisma.applications.findFirst({ where: { id: { not: id }, candidate_id: current.candidate_id, job_id: patch.jobId, stages: { kind: "active" } }, select: { candidates: { select: { first_name: true, last_name: true } } } });
+    if (clash) throw new HttpError(409, `${fullName(clash.candidates) || "This candidate"} already has an open application for this job`);
+  }
   await prisma.applications.updateMany({ where: { id }, data: meaningful ? { ...data, last_activity_at: new Date() } : data });
+  if (jobChanged) {
+    await prisma.interviews.updateMany({ where: { application_id: id }, data: { job_id: patch.jobId ?? null } });
+    const rf = await prisma.resume_files.findUnique({ where: { candidate_id: current.candidate_id }, select: { id: true } });
+    if (rf && (await google.isConnected())) await enqueue(rf.id, "move_drive");
+  }
   if (meaningful) {
     const a = await prisma.applications.findUnique({ where: { id }, select: { candidate_id: true, candidates: { select: { first_name: true, last_name: true } } } });
     if (a) await logActivity(actorId, "candidate_updated", `updated the ${[patch.ownerId !== undefined && "owner", patch.jobId !== undefined && "job"].filter(Boolean).join(" and ")} for ${fullName(a.candidates)}`, a.candidate_id);
@@ -148,11 +161,17 @@ export async function keepSeparate(candidateId: string, otherId: string) {
     kept_separate_from = array_append(array_remove(kept_separate_from, ${otherId}::uuid), ${otherId}::uuid) where id = ${candidateId}::uuid`;
 }
 
+/** Merge takes the duplicate's resume only if it's the newer one and both are in S3 (swapped in place, same row). */
+export function takesDuplicateFile(dupFile: { s3_key: string | null; updated_at: Date } | null, targetFile: { s3_key: string | null; updated_at: Date } | null) {
+  return !!(dupFile?.s3_key && targetFile?.s3_key && dupFile.updated_at > targetFile.updated_at);
+}
+
 /**
  * Folds a duplicate record into the person it duplicates. Their applications move over; one for a job the target
  * already has open is folded into the target's (its interviews and notes follow, the target's stage and history win).
- * The duplicate's newer resume becomes the target's current version. The file step runs first, so if it fails
- * nothing has changed yet.
+ * The newer of the two resumes becomes the target's current version. That file swap runs first and on its own: if
+ * the database step then fails, the target keeps the new file version (its S3/Drive history has the old one) and
+ * both people still exist. Everything else, including deleting the duplicate, is one transaction.
  */
 export async function mergeCandidate(dupId: string, targetId: string, actorId: string | null) {
   if (dupId === targetId) throw new HttpError(400, "A candidate can't be merged into itself");
@@ -164,11 +183,12 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
 
   // ponytail: only an S3-backed resume can be swapped in place; otherwise the target keeps its file and the
   // duplicate's goes into the normal deletion grace period (restorable from Settings → Resume sync).
+  // The same happens when the target's file is the newer one.
   const [dupFile, targetFile] = await Promise.all([
     prisma.resume_files.findUnique({ where: { candidate_id: dupId } }),
     prisma.resume_files.findUnique({ where: { candidate_id: targetId } }),
   ]);
-  if (dupFile?.s3_key && targetFile?.s3_key) {
+  if (dupFile && takesDuplicateFile(dupFile, targetFile)) {
     const { data } = await readResume(dup.resume as unknown as ResumeFile);
     await replaceResumeFile(targetId, { fileName: dupFile.file_name, data });
   }
@@ -193,11 +213,11 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
       await (table as typeof tx.notes).updateMany({ where: { candidate_id: dupId }, data: { candidate_id: targetId } });
     await tx.candidates.update({ where: { id: targetId }, data: { possible_duplicate_of: null } });
     await touch((await tx.applications.findMany({ where: { candidate_id: targetId }, select: { id: true } })).map((a) => a.id), tx);
+    await markCandidatesDeleted([dupId], tx);
     return moved;
   });
 
   // A newer application may be for another job: the person's Drive file follows it.
   if (moved && targetFile && (await google.isConnected())) await enqueue(targetFile.id, "move_drive");
-  await markCandidatesDeleted([dupId]);
   await logActivity(actorId, "candidate_updated", `merged ${fullName(dup)} into ${fullName(target)}`, targetId);
 }
