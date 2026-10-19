@@ -3,12 +3,24 @@
 import assert from "node:assert/strict";
 import { addNote, bookingApplication, createApplication, driveFolderJob, findDuplicate, keepSeparate, mergeCandidate, moveApplications, saveRejectionReasons, takesDuplicateFile, updateApplication } from "../src/applications.ts";
 import { rebasePath } from "../src/drive.ts";
-import { prisma } from "../src/db.ts";
+import { prisma, remoteMigrationBlocked } from "../src/db.ts";
 import { createCandidate } from "../src/pipeline.ts";
 import { runJob } from "../src/sync-jobs.ts";
 import { claimNext, enqueue } from "../src/sync-queue.ts";
 
 if (!/localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL ?? "")) throw new Error("check-applications-db only runs against a local DATABASE_URL");
+
+// G1: a dev server never migrates a remote (e.g. production) database unless explicitly allowed
+{
+  const remote = "postgresql://u:p@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres";
+  assert.equal(remoteMigrationBlocked({ isProd: false, url: remote, allow: false }), true, "G1: dev + remote → blocked");
+  assert.equal(remoteMigrationBlocked({ isProd: false, url: remote, allow: true }), false, "G1: explicit opt-in");
+  assert.equal(remoteMigrationBlocked({ isProd: true, url: remote, allow: false }), false, "G1: production migrates");
+  assert.equal(remoteMigrationBlocked({ isProd: false, url: "postgres://postgres:postgres@localhost:5433/hirely", allow: false }), false, "G1: local is fine");
+  assert.equal(remoteMigrationBlocked({ isProd: false, url: "postgres://x@127.0.0.1/db", allow: false }), false, "G1: loopback is fine");
+  assert.equal(remoteMigrationBlocked({ isProd: false, url: "postgres://hirely:pw@db:5432/hirely", allow: false }), false, "G1: docker compose service");
+  console.log("G1 ok");
+}
 
 // Leftovers from a run that failed halfway.
 await prisma.candidates.deleteMany({ where: { first_name: "CHK" } });

@@ -252,6 +252,7 @@ Open **https://hire.yourcompany.com**. The padlock (HTTPS) is set up automatical
 ## Step 9 — First-time setup inside the app
 
 1. **Settings → Google & AI → Connect Google.** Sign in with the Google account that should *own* the resume folders and interview events, and tick **both** the Drive and Calendar permissions. A shared account such as `hiring@yourcompany.com` works best, so it doesn't depend on one person.
+   - Only the account in `GOOGLE_OWNER_EMAIL` (default `admin@embtelsolutions.com`) can connect or disconnect Google, and it must also be the Google account picked on the consent screen. Set it in `.env` if yours differs.
    - The app creates `ATS/Resumes` in that account's Drive. You can change the folder name in Settings.
    - **Calendar:** leave `primary`, or paste the ID of a shared hiring calendar that account can edit.
 2. **Settings → Email domain.** Check the sender name, address, reply-to and signature → **Save**. Click **Get records / Verify** and confirm the DNS records are green, then **Send test email**.
@@ -288,7 +289,7 @@ You're live. 🎉
 15 3 * * * cd /home/ubuntu/hirely && ./scripts/backup.sh >> backups/backup.log 2>&1
 ```
 
-Resume files live in Google Drive (Google keeps them safe). Lightsail's automatic snapshots cover the whole server as a second safety net.
+Resume files live in S3 (with versioning) and are mirrored to Google Drive. Server snapshots (Lightsail or EC2) are a second safety net.
 
 **Updating with Option B (zip):** upload the new `hirely.tar.gz`, then run:
 
@@ -297,6 +298,34 @@ tar -xzf hirely.tar.gz -C hirely && cd hirely && ./scripts/update.sh
 ```
 
 Your `.env` and data are not touched.
+
+**Backups with a hosted database (Supabase).** When `DIRECT_URL` is set in `.env`, `backup.sh` and `restore.sh` dump and restore that database's `public` schema (using a `postgres:17` container) instead of the bundled one. Supabase's own backups (Project → Database → Backups) are a second safety net.
+
+### Upgrading to the applications release (migrations 005–007)
+
+This release turns each candidate into a person with one application per job, keeps every stage move, requires a reason for rejections, and adds the Resumes page. The database is changed automatically on the first start: `005` copies each candidate's job, stage, owner, rating and AI summary into a new `applications` table and then **drops those columns from `candidates`**, `006` adds the duplicate-check column, and `007` links already-scheduled emails to their application. It was tested on a copy of the production database (all migrations applied, schema matches, checks pass).
+
+**Before**
+1. Pick a quiet time; the app restarts once (about a minute).
+2. `./scripts/backup.sh` and check it printed `Saved backups/…` with a non-zero size. Keep that file name.
+3. If the Google owner isn't `admin@embtelsolutions.com`, set `GOOGLE_OWNER_EMAIL` in `.env`.
+
+**Deploy**
+4. `./scripts/update.sh` (it backs up again, pulls and rebuilds).
+5. `docker compose logs -f app` — expect `Applying migration 005_applications`, `006_kept_separate`, `007_email_application_backfill`, then `Hirely API listening on :3000`.
+
+**Check (5 minutes)**
+6. Sign in. **Pipeline** shows every card in its old stage. Open a candidate: an application card with its stage history.
+7. Drag a test card to *Not moving forward*: a reason dialog appears. Press Undo.
+8. **Resumes** lists resumes and opens a preview. **Settings → Resume sync** shows no new failures.
+9. Hard-refresh once (Ctrl+Shift+R) if a browser still shows the old screens.
+
+**Roll back if** the app won't start, the migration logs an error, or cards or resumes are missing:
+1. `git checkout <previous commit>` (the one before this release) and `docker compose build app` — the old code must be in place first, or the restart below would run the migration again.
+2. `./scripts/restore.sh backups/<file from step 2>.sql.gz` — it stops the app, restores, and starts it on the old code.
+3. `docker compose logs -f app` — no `Applying migration 005…` this time.
+
+Anything changed in the app after the backup is lost in a rollback, so decide within the first hour. Resume files in S3 and Drive are not touched by the migration.
 
 ---
 
