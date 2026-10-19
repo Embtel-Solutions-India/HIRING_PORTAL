@@ -1,15 +1,17 @@
 /** resume_files rows: the bridge between a candidate, its S3 object and its Drive file. */
 import type { ResumeFile } from "../../frontend/src/types.ts";
+import { touchCandidate } from "./activity.ts";
 import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
 import { ensureChangesCheckpoint } from "./drive-changes.ts";
 import * as google from "./google.ts";
 import { HttpError } from "./http.ts";
-import { createCandidate } from "./pipeline.ts";
+import { createCandidate, enqueueParse } from "./pipeline.ts";
 import * as s3 from "./s3.ts";
 import { patchSetting } from "./settings.ts";
+import { mimeFor } from "./storage.ts";
 import { enqueue, type Db } from "./sync-queue.ts";
-import { ChecksumMismatch, keyPrefix, resolveFileName, s3MimeFor, s3NameFor, safeKeyName } from "./sync-rules.ts";
+import { ChecksumMismatch, digest, keyPrefix, resolveFileName, s3MimeFor, s3NameFor, safeKeyName } from "./sync-rules.ts";
 
 export type ResumeFileRow = NonNullable<Awaited<ReturnType<typeof prisma.resume_files.findUnique>>>;
 
@@ -43,15 +45,70 @@ export const graceDate = () => new Date(Date.now() + config.resumeDeleteGraceDay
 /** The state a resume returns to when its deletion is cancelled: an unresolved conflict comes back. */
 export const undeletedState = (row: { conflict: unknown }) => (row.conflict ? "conflict" : "synced");
 
-/** Deletes candidates and starts their resumes' grace period, all or nothing. Conflicts are kept for a later restore. */
-export async function markCandidatesDeleted(ids: string[]): Promise<number> {
-  return prisma.$transaction(async (tx) => {
-    await tx.resume_files.updateMany({
+/**
+ * Moves a Drive file into a folder. A move bumps the file's Drive version; when the file is a tracked resume that was
+ * unchanged since our last sync, the new version is recorded so the change feed doesn't take the move for an edit.
+ * If it had changed (e.g. a Google Doc edited in Drive), the baseline is left alone so that edit still syncs.
+ */
+export async function moveDriveFile(fileId: string, folderId: string) {
+  const row = await prisma.resume_files.findUnique({ where: { drive_file_id: fileId }, select: { id: true, drive_version: true } });
+  const before = row ? await google.getFileMeta(fileId) : null;
+  await google.moveFile(fileId, folderId);
+  if (row && before?.version === row.drive_version) {
+    const after = await google.getFileMeta(fileId);
+    await prisma.resume_files.updateMany({ where: { id: row.id, drive_version: row.drive_version }, data: { drive_version: after.version ?? null, updated_at: new Date() } });
+  }
+}
+
+/** The person's resume row, if the portal may change it now (it has an S3 copy and no sync issue). */
+export async function editableResumeRow(candidateId: string) {
+  const row = await prisma.resume_files.findUnique({ where: { candidate_id: candidateId } });
+  if (!row?.s3_key) throw new HttpError(409, "This resume hasn't been copied to S3 yet — try again once the migration has finished");
+  if (row.state === "conflict" || row.state === "pending_deletion") throw new HttpError(409, "This resume has a sync issue — resolve it in Settings → Resume sync first");
+  return row;
+}
+
+/** Uploads a new version of a person's resume to S3 (same row, same Drive file), then re-parses it. */
+export async function replaceResumeFile(candidateId: string, file: { fileName: string; data: Buffer }) {
+  const row = await editableResumeRow(candidateId);
+  const { sha256, md5 } = digest(file.data);
+  const mimeType = mimeFor(file.fileName);
+  const key = `${keyPrefix(row.s3_key!)}/${safeKeyName(file.fileName)}`;
+  const versionId = await s3.putVerified(key, file.data, mimeType, sha256);
+  await prisma
+    .$transaction(async (tx) => {
+      // Only if the sync worker didn't change the resume while we uploaded; otherwise its change would be lost.
+      const { count } = await tx.resume_files.updateMany({
+        where: { id: row.id, s3_key: row.s3_key, s3_version_id: row.s3_version_id, state: { notIn: ["conflict", "pending_deletion"] } },
+        data: { s3_key: key, s3_version_id: versionId, sha256, size_bytes: file.data.length, file_name: file.fileName, mime_type: mimeType, state: "pending", updated_at: new Date() },
+      });
+      if (!count) throw new HttpError(409, "The resume was just updated from Google Drive — check it and try again");
+      const u = await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } });
+      await syncCandidateResume(tx, u);
+      await tx.candidates.update({ where: { id: candidateId }, data: { parse_status: "pending" } });
+      await enqueue(row.id, "to_drive", { md5 }, tx);
+      if (file.fileName !== row.drive_name) await enqueue(row.id, "rename_drive", { name: file.fileName }, tx);
+    })
+    .catch(async (e) => {
+      // Lost the race: drop just our upload, never the worker's version.
+      await s3.remove(key, versionId).catch(() => {});
+      throw e;
+    });
+  if (key !== row.s3_key) await s3.remove(row.s3_key!).catch((e) => console.warn("[resume] couldn't remove old key", e));
+  enqueueParse(candidateId);
+  await touchCandidate(candidateId);
+}
+
+/** Deletes candidates and starts their resumes' grace period, all or nothing (inside `tx` when given). Conflicts are kept for a later restore. */
+export async function markCandidatesDeleted(ids: string[], tx?: Prisma.TransactionClient): Promise<number> {
+  const run = async (db: Prisma.TransactionClient) => {
+    await db.resume_files.updateMany({
       where: { candidate_id: { in: ids }, state: { not: "deleted" } },
       data: { state: "pending_deletion", deleted_side: "portal", delete_after: graceDate(), updated_at: new Date() },
     });
-    return (await tx.candidates.deleteMany({ where: { id: { in: ids } } })).count;
-  });
+    return (await db.candidates.deleteMany({ where: { id: { in: ids } } })).count;
+  };
+  return tx ? run(tx) : prisma.$transaction(run);
 }
 
 /** Admin "Restore" on a resume pending deletion. */

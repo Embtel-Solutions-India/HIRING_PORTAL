@@ -1,4 +1,4 @@
-import { Briefcase, FolderOpen, MapPin, Pencil, Plus, Users } from "lucide-react";
+import { Briefcase, FolderOpen, MapPin, Pencil, Plus, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Avatar, Badge, Button, Field, Modal, PageHeader, Segmented, Select } from "../components/ui";
@@ -8,9 +8,10 @@ import { cn, timeAgo, uid } from "../lib/utils";
 
 export default function Jobs() {
   const jobs = useStore((s) => s.jobs);
-  const candidates = useStore((s) => s.candidates);
+  const applications = useStore((s) => s.applications);
   const stages = useStore((s) => s.stages);
   const upsert = useStore((s) => s.upsertJob);
+  const deleteJob = useStore((s) => s.deleteJob);
   const toast = useStore((s) => s.toast);
   const settings = useStore((s) => s.settings);
   const teamMap = useTeamMap();
@@ -62,7 +63,7 @@ export default function Jobs() {
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {list.map((j) => {
-          const jc = candidates.filter((c) => c.jobId === j.id);
+          const jc = applications.filter((a) => a.jobId === j.id);
           const hm = teamMap[j.hiringManagerId];
           const segments = stages.map((s) => ({ s, n: jc.filter((c) => c.stageId === s.id).length })).filter((x) => x.n > 0);
           const hovered = hover?.job === j.id ? segments.find((x) => x.s.id === hover?.stage) : undefined;
@@ -136,6 +137,14 @@ export default function Jobs() {
       <JobEditor
         key={editing?.id ?? "closed"}
         job={editing}
+        candidateCount={editing ? applications.filter((a) => a.jobId === editing.id).length : 0}
+        canDelete={!!editing && jobs.some((x) => x.id === editing.id)}
+        onDelete={async () => {
+          if (!editing || !confirm(`Delete the job "${editing.title}"? This can't be undone. Its Drive folder stays in Drive.`)) return;
+          if (!(await deleteJob(editing.id))) return;
+          setEditing(null);
+          toast("Job deleted", "info");
+        }}
         onClose={() => setEditing(null)}
         onSave={async (j) => {
           if (!(await upsert(j))) return;
@@ -147,7 +156,21 @@ export default function Jobs() {
   );
 }
 
-function JobEditor({ job, onClose, onSave }: { job: Job | null; onClose: () => void; onSave: (j: Job) => void }) {
+function JobEditor({
+  job,
+  candidateCount,
+  canDelete,
+  onDelete,
+  onClose,
+  onSave,
+}: {
+  job: Job | null;
+  candidateCount: number;
+  canDelete: boolean;
+  onDelete: () => void;
+  onClose: () => void;
+  onSave: (j: Job) => void;
+}) {
   const team = useStore((s) => s.team);
   const settings = useStore((s) => s.settings);
   const [d, setD] = useState(job);
@@ -159,6 +182,18 @@ function JobEditor({ job, onClose, onSave }: { job: Job | null; onClose: () => v
       title={job?.title ? "Edit job" : "New job"}
       footer={
         <>
+          {canDelete && (
+            <Button
+              variant="ghost"
+              className="mr-auto text-danger"
+              icon={<Trash2 size={14} />}
+              disabled={candidateCount > 0}
+              title={candidateCount > 0 ? `Move or delete its ${candidateCount} candidate(s) first, or set the job to Closed` : undefined}
+              onClick={onDelete}
+            >
+              Delete
+            </Button>
+          )}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>

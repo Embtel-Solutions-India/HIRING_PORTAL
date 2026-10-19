@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "react-router-dom";
 import { ContactRow, resumeUrl, ResumePreview, SummaryCard } from "../components/candidate";
 import { prefetchDocx } from "../components/DocxViewer";
+import { DuplicateBanner } from "../components/DuplicateBanner";
 import { FeedbackForm } from "../components/FeedbackForm";
 import { prefetchPdf } from "../components/PdfViewer";
 import { SourceBadge } from "../components/SourcePicker";
 import { Avatar, Badge, Button, Checkbox, Modal, Segmented, Select, StageBadge, Stars } from "../components/ui";
-import { useCan, useCurrentUser, useJobMap, useStageMap, useStore } from "../data/store";
+import { useCan, useCards, useCurrentUser, useJobMap, useStageMap, useStore, type Card } from "../data/store";
 import type { Candidate } from "../types";
 import { cn, daysSince, fmtDayLabel, fmtTime, fullName } from "../lib/utils";
 
@@ -30,11 +31,11 @@ function prefetchResume(c: Candidate | undefined) {
 
 export default function Review() {
   const me = useCurrentUser()!;
-  const candidates = useStore((s) => s.candidates);
+  const cards = useCards();
   const stages = useStore((s) => s.stages);
   const jobs = useStore((s) => s.jobs);
   const interviews = useStore((s) => s.interviews);
-  const moveStage = useStore((s) => s.moveStage);
+  const requestMove = useStore((s) => s.requestMove);
   const toggleStar = useStore((s) => s.toggleStar);
   const setRating = useStore((s) => s.setRating);
   const addNote = useStore((s) => s.addNote);
@@ -59,8 +60,8 @@ export default function Review() {
   const deckRef = useRef<HTMLDivElement>(null);
 
   const myNextInterview = useCallback(
-    (candidateId: string) => {
-      const mine = interviews.filter((i) => i.candidateId === candidateId && i.interviewerIds.includes(me.id) && i.status !== "cancelled");
+    (applicationId: string) => {
+      const mine = interviews.filter((i) => i.applicationId === applicationId && i.interviewerIds.includes(me.id) && i.status !== "cancelled");
       return mine.find((i) => new Date(i.start) > new Date()) ?? mine[mine.length - 1];
     },
     [interviews, me.id],
@@ -71,41 +72,45 @@ export default function Review() {
   const [queueIds, setQueueIds] = useState<string[]>([]);
   const [snapKey, setSnapKey] = useState("");
   useEffect(() => {
-    const matches = (c: Candidate) => (jobId === "all" || c.jobId === jobId) && (stageId === "all" || c.stageId === stageId);
+    const matches = ({ app }: Card) => (jobId === "all" || app.jobId === jobId) && (stageId === "all" || app.stageId === stageId);
     if (snapKey === queueKey) {
       // Same filters: only append newcomers (e.g. resumes a teammate just imported) at the end.
-      const extra = candidates.filter((c) => !queueIds.includes(c.id) && matches(c));
-      if (extra.length) setQueueIds((ids) => [...ids, ...extra.map((c) => c.id)]);
+      const extra = cards.filter((c) => !queueIds.includes(c.app.id) && matches(c));
+      if (extra.length) setQueueIds((ids) => [...ids, ...extra.map((c) => c.app.id)]);
       return;
     }
-    const ivTime = (c: Candidate) => {
-      const iv = myNextInterview(c.id);
+    const ivTime = (c: Card) => {
+      const iv = myNextInterview(c.app.id);
       return iv ? Math.abs(new Date(iv.start).getTime() - Date.now()) : Number.MAX_SAFE_INTEGER;
     };
-    const list = candidates.filter(matches);
-    list.sort((a, b) =>
+    const list = cards.filter(matches);
+    list.sort(({ app: a }, { app: b }) =>
       sort === "match"
         ? b.summary.matchScore - a.summary.matchScore
         : sort === "newest"
           ? b.appliedAt.localeCompare(a.appliedAt)
           : sort === "oldest"
             ? a.appliedAt.localeCompare(b.appliedAt)
-            : ivTime(a) - ivTime(b),
+            : 0,
     );
-    setQueueIds(list.map((c) => c.id));
+    if (sort === "interview") list.sort((a, b) => ivTime(a) - ivTime(b));
+    setQueueIds(list.map((c) => c.app.id));
     setSnapKey(queueKey);
     setIndex(0);
     setDecisions({});
-  }, [queueKey, candidates, snapKey, queueIds, jobId, stageId, sort, myNextInterview]);
+  }, [queueKey, cards, snapKey, queueIds, jobId, stageId, sort, myNextInterview]);
 
-  const queue = useMemo(() => queueIds.map((id) => candidates.find((c) => c.id === id)).filter(Boolean) as Candidate[], [queueIds, candidates]);
+  const queue = useMemo(() => {
+    const byId = new Map(cards.map((c) => [c.app.id, c]));
+    return queueIds.flatMap((id) => byId.get(id) ?? []);
+  }, [queueIds, cards]);
   const done = index >= queue.length;
   const current = queue[index];
 
   // Warm up the next and previous resumes so switching feels instant.
   useEffect(() => {
-    prefetchResume(queue[index + 1]);
-    prefetchResume(queue[index - 1]);
+    prefetchResume(queue[index + 1]?.candidate);
+    prefetchResume(queue[index - 1]?.candidate);
   }, [index, queue]);
 
   const go = useCallback(
@@ -122,29 +127,33 @@ export default function Review() {
     setIndex(i);
   };
 
-  const nextStageFor = (c: Candidate) => {
+  const nextStageFor = (c: Card) => {
     const active = stages.filter((s) => s.kind !== "closed");
-    const i = active.findIndex((s) => s.id === c.stageId);
+    const i = active.findIndex((s) => s.id === c.app.stageId);
     return i === -1 ? undefined : active[Math.min(i + 1, active.length - 1)];
   };
   const rejectStage = stages.find((s) => s.kind === "closed");
 
-  const decide = (kind: "advance" | "reject") => {
+  const decide = async (kind: "advance" | "reject") => {
     if (!current || !canMove) return;
     const target = kind === "advance" ? nextStageFor(current) : rejectStage;
-    if (!target || target.id === current.stageId) return go(1);
-    const from = current.stageId;
-    const id = current.id;
-    void moveStage([id], target.id, { notify: notify && canEmail });
+    if (!target || target.id === current.app.stageId) return go(1);
+    const from = current.app.stageId;
+    const id = current.app.id;
+    const name = current.candidate.firstName;
+    if (!(await requestMove([id], target.id, { notify: notify && canEmail }))) return;
     setDecisions((d) => ({ ...d, [id]: target.id }));
-    toast(`${current.firstName} → ${target.name}`, "success", {
+    toast(`${name} → ${target.name}`, "success", {
       label: "Undo",
       onClick: () => {
-        void moveStage([id], from);
-        setDecisions((d) => {
-          const { [id]: _, ...rest } = d;
-          return rest;
-        });
+        void requestMove([id], from).then(
+          (undone) =>
+            undone &&
+            setDecisions((d) => {
+              const { [id]: _, ...rest } = d;
+              return rest;
+            }),
+        );
       },
     });
     go(1);
@@ -168,11 +177,11 @@ export default function Review() {
     } else if (key === "Home") {
       e.preventDefault();
       jump(0);
-    } else if (key.toLowerCase() === "a" && canMove) decide("advance");
-    else if (key.toLowerCase() === "r" && canMove) decide("reject");
-    else if (key.toLowerCase() === "s" && current && canNote) void toggleStar(current.id);
+    } else if (key.toLowerCase() === "a" && canMove) void decide("advance");
+    else if (key.toLowerCase() === "r" && canMove) void decide("reject");
+    else if (key.toLowerCase() === "s" && current && canNote) void toggleStar(current.app.id);
     else if (key.toLowerCase() === "f" && current && !canMove) {
-      const iv = myNextInterview(current.id);
+      const iv = myNextInterview(current.app.id);
       if (iv) setFeedbackFor(iv.id);
     } else if (key === " " && current && t.tagName !== "BUTTON") {
       e.preventDefault();
@@ -191,7 +200,7 @@ export default function Review() {
   const rejected = Object.values(decisions).filter((s) => stageMap[s]?.kind === "closed").length;
   const prev = queue[index - 1];
   const next = queue[index + 1];
-  const currentIv = current ? myNextInterview(current.id) : undefined;
+  const currentIv = current ? myNextInterview(current.app.id) : undefined;
   const blurAfter = (fn: (v: string) => void) => (v: string) => {
     fn(v);
     (document.activeElement as HTMLElement | null)?.blur();
@@ -236,13 +245,13 @@ export default function Review() {
       <div className="mb-4 flex h-1.5 gap-0.5 overflow-hidden rounded-full">
         {queue.map((c, i) => (
           <button
-            key={c.id}
+            key={c.app.id}
             onClick={() => jump(i)}
-            aria-label={`Go to ${fullName(c)}`}
-            title={fullName(c)}
+            aria-label={`Go to ${fullName(c.candidate)}`}
+            title={fullName(c.candidate)}
             className={cn(
               "h-full flex-1 transition hover:opacity-70",
-              decisions[c.id] ? (stageMap[decisions[c.id]!]?.kind === "closed" ? "bg-danger/70" : "bg-brand-500") : i < index ? "bg-line-strong" : i === index ? "bg-ink" : "bg-sunken",
+              decisions[c.app.id] ? (stageMap[decisions[c.app.id]!]?.kind === "closed" ? "bg-danger/70" : "bg-brand-500") : i < index ? "bg-line-strong" : i === index ? "bg-ink" : "bg-sunken",
             )}
           />
         ))}
@@ -255,8 +264,8 @@ export default function Review() {
         aria-label="Candidate cards. Use the left and right arrow keys to switch."
         className="relative h-[calc(100dvh-268px)] min-h-[460px] outline-none md:px-[72px] lg:h-auto lg:min-h-[560px] lg:flex-1"
       >
-        <SideArrow side="left" disabled={index === 0} onClick={() => go(-1)} name={prev ? fullName(prev) : ""} />
-        <SideArrow side="right" disabled={done} onClick={() => go(1)} name={next ? fullName(next) : current ? "Finish" : ""} />
+        <SideArrow side="left" disabled={index === 0} onClick={() => go(-1)} name={prev ? fullName(prev.candidate) : ""} />
+        <SideArrow side="right" disabled={done} onClick={() => go(1)} name={next ? fullName(next.candidate) : current ? "Finish" : ""} />
 
         <div className="relative h-full">
           {done || !current ? (
@@ -268,7 +277,7 @@ export default function Review() {
                 if (!c) return null;
                 return (
                   <div
-                    key={c.id}
+                    key={c.app.id}
                     aria-hidden
                     className="absolute inset-0 rounded-2xl border border-line bg-surface shadow-card"
                     style={{ transform: `translateY(${offset * 10}px) scale(${1 - offset * 0.025})`, opacity: 1 - offset * 0.3 }}
@@ -276,7 +285,7 @@ export default function Review() {
                 );
               })}
               <AnimatePresence initial={false} custom={direction} mode="popLayout">
-                <SwipeCard key={current.id} candidate={current} direction={direction} onSwipe={go} pane={pane} setPane={setPane} decision={decisions[current.id]}>
+                <SwipeCard key={current.app.id} card={current} direction={direction} onSwipe={go} pane={pane} setPane={setPane} decision={decisions[current.app.id]}>
                   <div className="flex flex-col gap-2 border-t border-line bg-paper/70 p-3 sm:flex-row sm:items-center sm:gap-3">
                     {canNote && (
                       <form
@@ -286,7 +295,7 @@ export default function Review() {
                           if (!note.trim()) return;
                           const body = note.trim();
                           setNote("");
-                          if (await addNote(current.id, body)) toast("Note added");
+                          if (await addNote(current.candidate.id, body, current.app.id)) toast("Note added");
                         }}
                       >
                         <MessageSquarePlus size={16} className="shrink-0 text-muted" />
@@ -304,16 +313,16 @@ export default function Review() {
                         </button>
                       )}
                       <span className="hidden sm:inline-flex">
-                        <Stars value={current.rating} onChange={canNote ? (v) => void setRating(current.id, v) : undefined} size={16} />
+                        <Stars value={current.app.rating} onChange={canNote ? (v) => void setRating(current.app.id, v) : undefined} size={16} />
                       </span>
                       {canNote && (
                         <button
-                          onClick={() => toggleStar(current.id)}
-                          className={cn("inline-flex size-9 shrink-0 items-center justify-center rounded-lg border transition", current.starred ? "border-amber-300 bg-amber-50 text-amber-500" : "border-line bg-surface text-muted hover:text-ink")}
-                          aria-label={current.starred ? "Unstar" : "Star"}
+                          onClick={() => toggleStar(current.app.id)}
+                          className={cn("inline-flex size-9 shrink-0 items-center justify-center rounded-lg border transition", current.app.starred ? "border-amber-300 bg-amber-50 text-amber-500" : "border-line bg-surface text-muted hover:text-ink")}
+                          aria-label={current.app.starred ? "Unstar" : "Star"}
                           title="Star (S)"
                         >
-                          <Star size={16} className={current.starred ? "fill-amber-400" : ""} />
+                          <Star size={16} className={current.app.starred ? "fill-amber-400" : ""} />
                         </button>
                       )}
                       {canMove ? (
@@ -322,7 +331,7 @@ export default function Review() {
                             Not a fit
                           </Button>
                           <Button variant="primary" onClick={() => decide("advance")} icon={<Check size={16} />} className="flex-1 sm:flex-none" title="Advance (A)">
-                            {nextStageFor(current) && nextStageFor(current)!.id !== current.stageId ? nextStageFor(current)!.name : "Advance"}
+                            {nextStageFor(current) && nextStageFor(current)!.id !== current.app.stageId ? nextStageFor(current)!.name : "Advance"}
                           </Button>
                         </>
                       ) : (
@@ -374,7 +383,7 @@ export default function Review() {
         open={!!feedbackFor}
         onClose={() => setFeedbackFor(null)}
         title="Interview feedback"
-        description={current ? `${fullName(current)}${currentIv ? ` · ${currentIv.title}, ${fmtDayLabel(currentIv.start)} ${fmtTime(currentIv.start)}` : ""}` : undefined}
+        description={current ? `${fullName(current.candidate)}${currentIv ? ` · ${currentIv.title}, ${fmtDayLabel(currentIv.start)} ${fmtTime(currentIv.start)}` : ""}` : undefined}
       >
         {feedbackFor && <FeedbackForm interviewId={feedbackFor} onDone={() => setFeedbackFor(null)} />}
       </Modal>
@@ -409,7 +418,7 @@ const cardVariants = {
 };
 
 function SwipeCard({
-  candidate: c,
+  card: { app, candidate: c },
   direction,
   onSwipe,
   pane,
@@ -417,7 +426,7 @@ function SwipeCard({
   decision,
   children,
 }: {
-  candidate: Candidate;
+  card: Card;
   direction: number;
   onSwipe: (d: number) => void;
   pane: "summary" | "resume";
@@ -472,12 +481,12 @@ function SwipeCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="truncate text-[18px] font-extrabold tracking-tight">{fullName(c)}</h2>
-            <StageBadge stage={stageMap[c.stageId]} />
+            <StageBadge stage={stageMap[app.stageId]} />
             <SourceBadge sourceId={c.sourceId} muted={false} />
             {decision && <Badge tone={stageMap[decision]?.kind === "closed" ? "danger" : "lime"}>Moved this session</Badge>}
           </div>
           <p className="truncate text-[13px] text-muted">
-            {[c.currentTitle && `${c.currentTitle}${c.currentCompany ? ` · ${c.currentCompany}` : ""}`, jobMap[c.jobId] && `for ${jobMap[c.jobId]!.title}`, `applied ${daysSince(c.appliedAt)}d ago`]
+            {[c.currentTitle && `${c.currentTitle}${c.currentCompany ? ` · ${c.currentCompany}` : ""}`, jobMap[app.jobId] && `for ${jobMap[app.jobId]!.title}`, `applied ${daysSince(app.appliedAt)}d ago`]
               .filter(Boolean)
               .join(" · ")}
           </p>
@@ -502,8 +511,9 @@ function SwipeCard({
           <ResumePreview candidate={c} compact />
         </div>
         <div className={cn("scroll-slim min-h-0 space-y-3 overflow-y-auto p-4 sm:p-5", pane === "summary" ? "block" : "hidden lg:block")}>
+          <DuplicateBanner candidate={c} />
           <ContactRow candidate={c} />
-          <SummaryCard candidate={c} />
+          <SummaryCard candidate={c} app={app} />
           {c.notes.length > 0 && (
             <div className="card p-3">
               <p className="label mb-1.5">Latest note</p>

@@ -15,20 +15,31 @@ export default async function bootstrapRoutes(app: FastifyInstance) {
     const all = can(me.role, "candidates.viewAll");
     const org = await getSetting("org");
 
-    const [team, stages, jobs, candidates, sources] = await Promise.all([
+    const [team, stages, jobs, candidates, sources, rejectionReasons] = await Promise.all([
       prisma.users.findMany({ orderBy: { created_at: "asc" } }) as Promise<UserRow[]>,
       prisma.stages.findMany({ orderBy: { position: "asc" } }),
       prisma.jobs.findMany({ orderBy: { created_at: "desc" } }),
       prisma.candidates.findMany({
         where: all ? {} : { interviews: { some: { interviewer_ids: { has: me.id } } } },
-        orderBy: { applied_at: "desc" },
+        orderBy: { created_at: "desc" },
+        omit: { resume_text: true },
         include: { resume_files: { select: { state: true } } },
       }),
       prisma.sources
         .findMany({ orderBy: { position: "asc" } })
         .then((rows) => rows.sort((a, b) => a.position - b.position || a.name.toLowerCase().localeCompare(b.name.toLowerCase()))),
+      prisma.rejection_reasons.findMany({ orderBy: { position: "asc" } }),
     ]);
     const candidateIds = candidates.map((c) => c.id);
+    const applications = await prisma.applications.findMany({ where: all ? {} : { candidate_id: { in: candidateIds } }, orderBy: { last_activity_at: "desc" } });
+    // Latest move into a closed stage per application: why, by whom and from where it was closed.
+    const outcomes = await prisma.$queryRaw<Row[]>`
+      select distinct on (t.application_id) t.* from stage_transitions t join stages s on s.id = t.to_stage_id
+      where s.kind = 'closed' and t.application_id = any(${applications.map((a) => a.id)}::uuid[])
+      order by t.application_id, t.created_at desc`;
+    const outcomeBy = new Map(outcomes.map((o) => [o.application_id as string, o]));
+    const parseBy = new Map(candidates.map((c) => [c.id, c.parse_status]));
+    const closedStage = new Set(stages.filter((st) => st.kind === "closed").map((st) => st.id));
 
     const [notes, interviews] = await Promise.all([
       prisma.notes.findMany({ where: { candidate_id: { in: candidateIds } }, orderBy: { created_at: "desc" } }),
@@ -73,6 +84,9 @@ export default async function bootstrapRoutes(app: FastifyInstance) {
       sources: sources.map(s.source),
       jobs: jobs.map(s.job),
       candidates: candidates.map((c) => s.candidate(c, notesBy.get(c.id) ?? [])),
+      // A reason only describes the current state while the application is still closed (an undo clears it).
+      applications: applications.map((a) => s.application(a, parseBy.get(a.candidate_id) ?? "ready", closedStage.has(a.stage_id) ? (outcomeBy.get(a.id) ?? null) : null)),
+      rejectionReasons: rejectionReasons.map((r) => ({ id: r.id, label: r.label, position: r.position, active: r.active })),
       interviews: interviews.map((i) => s.interview(i, fbBy.get(i.id) ?? [])),
       bookingLinks: bookingLinks.map(s.bookingLink),
       templates: templates.map(s.template),

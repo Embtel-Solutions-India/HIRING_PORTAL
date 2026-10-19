@@ -20,6 +20,7 @@ model activity {
   candidates   candidates? @relation(fields: [candidate_id], references: [id], onUpdate: NoAction)
 
   @@index([created_at(sort: Desc)], map: "activity_created_idx")
+  @@index([candidate_id, created_at(sort: Desc)], map: "activity_candidate_idx")
 }
 
 model booking_links {
@@ -42,45 +43,37 @@ model booking_links {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model candidates {
-  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  first_name       String           @default("")
-  last_name        String           @default("")
-  email            String           @default("")
-  phone            String           @default("")
-  location         String           @default("")
-  current_title    String           @default("")
-  current_company  String           @default("")
-  job_id           String?          @db.Uuid
-  stage_id         String
-  applied_at       DateTime         @default(now()) @db.Timestamptz(6)
-  stage_entered_at DateTime         @default(now()) @db.Timestamptz(6)
-  owner_id         String?          @db.Uuid
-  rating           Int              @default(0)
-  starred          Boolean          @default(false)
-  tags             String[]         @default([])
-  skills           String[]         @default([])
-  experience       Json             @default("[]")
-  education        Json             @default("[]")
-  summary          Json?
-  resume           Json?
-  resume_text      String?
-  parse_status     String           @default("ready")
-  created_at       DateTime         @default(now()) @db.Timestamptz(6)
-  source_id        String?
-  activity         activity[]
-  jobs             jobs?            @relation(fields: [job_id], references: [id], onUpdate: NoAction)
-  users            users?           @relation(fields: [owner_id], references: [id], onUpdate: NoAction)
-  sources          sources?         @relation(fields: [source_id], references: [id], onUpdate: NoAction)
-  stages           stages           @relation(fields: [stage_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  drive_files      drive_files[]
-  resume_files     resume_files?
-  email_messages   email_messages[]
-  interviews       interviews[]
-  notes            notes[]
+  id                    String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  first_name            String           @default("")
+  last_name             String           @default("")
+  email                 String           @default("")
+  phone                 String           @default("")
+  location              String           @default("")
+  current_title         String           @default("")
+  current_company       String           @default("")
+  tags                  String[]         @default([])
+  skills                String[]         @default([])
+  experience            Json             @default("[]")
+  education             Json             @default("[]")
+  resume                Json?
+  resume_text           String?
+  parse_status          String           @default("ready")
+  created_at            DateTime         @default(now()) @db.Timestamptz(6)
+  source_id             String?
+  possible_duplicate_of String?          @db.Uuid
+  kept_separate_from    String[]         @default([]) @db.Uuid
+  activity              activity[]
+  applications          applications[]
+  duplicate_of          candidates?      @relation("candidate_duplicates", fields: [possible_duplicate_of], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  duplicates            candidates[]     @relation("candidate_duplicates")
+  sources               sources?         @relation(fields: [source_id], references: [id], onUpdate: NoAction)
+  drive_files           drive_files[]
+  resume_files          resume_files?
+  email_messages        email_messages[]
+  interviews            interviews[]
+  notes                 notes[]
 
-  @@index([job_id], map: "candidates_job_idx")
   @@index([source_id], map: "candidates_source_idx")
-  @@index([stage_id], map: "candidates_stage_idx")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -129,6 +122,8 @@ model email_messages {
   sent_at         DateTime?       @db.Timestamptz(6)
   opened_at       DateTime?       @db.Timestamptz(6)
   clicked_at      DateTime?       @db.Timestamptz(6)
+  application_id  String?         @db.Uuid
+  applications    applications?   @relation(fields: [application_id], references: [id], onUpdate: NoAction)
   email_campaigns email_campaigns @relation(fields: [campaign_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   candidates      candidates?     @relation(fields: [candidate_id], references: [id], onUpdate: NoAction)
 
@@ -173,43 +168,48 @@ model interviews {
   status             String               @default("scheduled")
   calendar_event_id  String?
   booked_via         String?              @db.Uuid
+  application_id     String               @db.Uuid
   created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  applications       applications         @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   interview_feedback interview_feedback[]
   booking_links      booking_links?       @relation(fields: [booked_via], references: [id], onUpdate: NoAction)
   candidates         candidates           @relation(fields: [candidate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   jobs               jobs?                @relation(fields: [job_id], references: [id], onUpdate: NoAction)
 
   @@index([candidate_id], map: "interviews_candidate_idx")
+  @@index([application_id], map: "interviews_application_idx")
   @@index([start_at], map: "interviews_start_idx")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model jobs {
-  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   title             String
-  department        String       @default("")
-  location          String       @default("")
-  type              String       @default("Full-time")
-  status            String       @default("open")
-  hiring_manager_id String?      @db.Uuid
-  openings          Int          @default(1)
-  description       String       @default("")
-  drive_folder      String       @default("")
+  department        String         @default("")
+  location          String         @default("")
+  type              String         @default("Full-time")
+  status            String         @default("open")
+  hiring_manager_id String?        @db.Uuid
+  openings          Int            @default(1)
+  description       String         @default("")
+  drive_folder      String         @default("")
   drive_folder_id   String?
-  created_at        DateTime     @default(now()) @db.Timestamptz(6)
-  candidates        candidates[]
+  created_at        DateTime       @default(now()) @db.Timestamptz(6)
+  applications      applications[]
   interviews        interviews[]
-  users             users?       @relation(fields: [hiring_manager_id], references: [id], onUpdate: NoAction)
+  users             users?         @relation(fields: [hiring_manager_id], references: [id], onUpdate: NoAction)
 }
 
 model notes {
-  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  candidate_id String     @db.Uuid
-  author_id    String?    @db.Uuid
-  body         String
-  created_at   DateTime   @default(now()) @db.Timestamptz(6)
-  users        users?     @relation(fields: [author_id], references: [id], onUpdate: NoAction)
-  candidates   candidates @relation(fields: [candidate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidate_id   String        @db.Uuid
+  author_id      String?       @db.Uuid
+  body           String
+  application_id String?       @db.Uuid
+  created_at     DateTime      @default(now()) @db.Timestamptz(6)
+  applications   applications? @relation(fields: [application_id], references: [id], onUpdate: NoAction)
+  users          users?        @relation(fields: [author_id], references: [id], onUpdate: NoAction)
+  candidates     candidates    @relation(fields: [candidate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([candidate_id], map: "notes_candidate_idx")
 }
@@ -249,7 +249,7 @@ model stages {
   kind                   String
   position               Int
   auto_email_template_id String?
-  candidates             candidates[]
+  applications           applications[]
   email_templates        email_templates? @relation(fields: [auto_email_template_id], references: [id], onUpdate: NoAction)
 }
 
@@ -265,7 +265,8 @@ model users {
   last_active_at     DateTime?            @db.Timestamptz(6)
   created_at         DateTime             @default(now()) @db.Timestamptz(6)
   activity           activity[]
-  candidates         candidates[]
+  applications       applications[]
+  stage_transitions  stage_transitions[]
   email_campaigns    email_campaigns[]
   interview_feedback interview_feedback[]
   jobs               jobs[]
@@ -316,4 +317,57 @@ model sync_jobs {
   resume_files   resume_files @relation(fields: [resume_file_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([status, run_after], map: "sync_jobs_due_idx")
+}
+
+model applications {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidate_id      String              @db.Uuid
+  job_id            String?             @db.Uuid
+  stage_id          String
+  owner_id          String?             @db.Uuid
+  applied_at        DateTime            @default(now()) @db.Timestamptz(6)
+  stage_entered_at  DateTime            @default(now()) @db.Timestamptz(6)
+  last_activity_at  DateTime            @default(now()) @db.Timestamptz(6)
+  rating            Int                 @default(0)
+  starred           Boolean             @default(false)
+  summary           Json?
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  candidates        candidates          @relation(fields: [candidate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  jobs              jobs?               @relation(fields: [job_id], references: [id], onUpdate: NoAction)
+  stages            stages              @relation(fields: [stage_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users             users?              @relation(fields: [owner_id], references: [id], onUpdate: NoAction)
+  stage_transitions stage_transitions[]
+  interviews        interviews[]
+  notes             notes[]
+  email_messages    email_messages[]
+
+  @@index([candidate_id], map: "applications_candidate_idx")
+  @@index([stage_id, last_activity_at(sort: Desc)], map: "applications_board_idx")
+  @@index([job_id], map: "applications_job_idx")
+}
+
+/// Insert-only history of every stage move.
+model stage_transitions {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  application_id    String             @db.Uuid
+  from_stage_id     String?
+  to_stage_id       String
+  actor_id          String?            @db.Uuid
+  reason_id         String?
+  reason_label      String?
+  note              String?
+  created_at        DateTime           @default(now()) @db.Timestamptz(6)
+  applications      applications       @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users             users?             @relation(fields: [actor_id], references: [id], onUpdate: NoAction)
+  rejection_reasons rejection_reasons? @relation(fields: [reason_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([application_id, created_at], map: "stage_transitions_app_idx")
+}
+
+model rejection_reasons {
+  id                String              @id
+  label             String
+  position          Int                 @default(0)
+  active            Boolean             @default(true)
+  stage_transitions stage_transitions[]
 }

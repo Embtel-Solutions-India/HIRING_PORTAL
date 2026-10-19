@@ -6,7 +6,10 @@ import type { Role } from "../../../frontend/src/types.ts";
 import { logActivity } from "../activity.ts";
 import { config } from "../config.ts";
 import { prisma } from "../db.ts";
+import { latestApplicationIds, saveRejectionReasons } from "../applications.ts";
+import { moveRootFolder } from "../drive.ts";
 import { createCampaign, sendSystemEmail } from "../email.ts";
+import { isConnected } from "../google.ts";
 import { HttpError, isUuid, requirePerm, type UserRow } from "../http.ts";
 import { ensureJobFolder } from "../storage.ts";
 import { getSetting, patchSetting, setSetting, type DnsRecord } from "../settings.ts";
@@ -28,7 +31,10 @@ export default async function adminRoutes(app: FastifyInstance) {
       })
       .parse(req.body);
     const user = requirePerm(req, body.recipientIds.length > 1 ? "emails.sendBulk" : "emails.sendSingle");
-    const id = await createCampaign({ ...body, actorId: user.id });
+    // A manual email talks about the job each person was most recently worked on for.
+    const latest = await latestApplicationIds(body.recipientIds);
+    const { recipientIds, ...rest } = body;
+    const id = await createCampaign({ ...rest, recipients: recipientIds.map((candidateId) => ({ candidateId, applicationId: latest.get(candidateId) ?? null })), actorId: user.id });
     return { id };
   });
 
@@ -88,6 +94,20 @@ export default async function adminRoutes(app: FastifyInstance) {
       console.warn("[jobs] couldn't create Drive folder:", e instanceof Error ? e.message : e);
     }
     return { id: jobId };
+  });
+
+  app.delete("/api/jobs/:id", async (req) => {
+    const user = requirePerm(req, "jobs.manage");
+    const { id } = req.params as { id: string };
+    if (!isUuid(id)) throw new HttpError(404, "Job not found");
+    const job = await prisma.jobs.findUnique({ where: { id }, select: { title: true, _count: { select: { applications: true, interviews: true } } } });
+    if (!job) throw new HttpError(404, "Job not found");
+    // Candidates and interviews point at the job; deleting it would orphan them, so closing is the way out for a used job.
+    const used = job._count.applications + job._count.interviews;
+    if (used) throw new HttpError(409, `${job.title} still has ${job._count.applications} application(s) and ${job._count.interviews} interview(s). Move or delete them first, or set the job to Closed.`);
+    await prisma.jobs.delete({ where: { id } });
+    await logActivity(user.id, "settings_changed", `deleted job ${job.title}`);
+    return { ok: true };
   });
 
   // ---------- team ----------
@@ -268,10 +288,29 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (google) {
       const current = await getSetting("google");
       const folderChanged = google.driveRootFolder && google.driveRootFolder !== current.driveRootFolder;
-      await patchSetting("google", { ...google, ...(folderChanged ? { driveRootFolderId: undefined } : {}) });
-      if (folderChanged) await prisma.jobs.updateMany({ data: { drive_folder_id: null } });
+      if (folderChanged && current.driveRootFolderId && (await isConnected())) {
+        // Bring the old folders and resumes along. Settings only change once the move is done, so a failed move can be retried by saving again.
+        const newId = await moveRootFolder(current.driveRootFolder, current.driveRootFolderId, google.driveRootFolder!);
+        await patchSetting("google", { ...google, driveRootFolderId: newId });
+      } else {
+        await patchSetting("google", { ...google, ...(folderChanged ? { driveRootFolderId: undefined } : {}) });
+        if (folderChanged) await prisma.jobs.updateMany({ data: { drive_folder_id: null } });
+      }
     }
     await logActivity(user.id, "settings_changed", `updated ${Object.keys(body).join(", ")} settings`);
+    return { ok: true };
+  });
+
+  app.put("/api/settings/rejection-reasons", async (req) => {
+    const user = requirePerm(req, "settings.pipeline");
+    const list = z
+      .array(z.object({ id: z.string().max(64).optional(), label: z.string().trim().min(1).max(60), active: z.boolean() }))
+      .min(1)
+      .max(50)
+      .parse(req.body);
+    if (!list.some((r) => r.active)) throw new HttpError(400, "Keep at least one reason turned on");
+    await saveRejectionReasons(list);
+    await logActivity(user.id, "settings_changed", "updated the rejection reasons");
     return { ok: true };
   });
 
@@ -285,7 +324,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     await prisma.$transaction(
       async (tx) => {
         const keep = stages.map((s) => s.id);
-        const used = await tx.candidates.findFirst({ where: { stage_id: { notIn: keep } }, select: { id: true } });
+        const used = await tx.applications.findFirst({ where: { stage_id: { notIn: keep } }, select: { id: true } });
         if (used) throw new HttpError(400, "Move candidates out of a stage before deleting it");
         await tx.stages.deleteMany({ where: { id: { notIn: keep } } });
         for (const [i, s] of stages.entries()) {

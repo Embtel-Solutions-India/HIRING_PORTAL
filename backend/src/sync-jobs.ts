@@ -1,12 +1,13 @@
 /** The sync worker: runs queued transfers one at a time, then polls Drive for changes. */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { driveFolderJob } from "./applications.ts";
 import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
 import { flagConflict, pollDriveChanges, portalPending } from "./drive-changes.ts";
 import * as google from "./google.ts";
 import { HttpError } from "./http.ts";
-import { registerDriveFile, renameInS3, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
+import { moveDriveFile, registerDriveFile, renameInS3, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
 import * as s3 from "./s3.ts";
 import { driveFolderFor } from "./storage.ts";
 import { claimNext, complete, enqueue, fail, resetRunning, setPayload, type JobRow } from "./sync-queue.ts";
@@ -73,10 +74,11 @@ async function toS3(job: JobRow, row: ResumeFileRow) {
   if (followUpRename) await enqueue(row.id, "rename_s3", { name: followUpRename });
 }
 
-/** Where a resume without a Drive file goes: its candidate's job/source folder. */
+/** Where a person's resume lives in Drive: the job/source folder of their newest open application (or newest at all). */
 async function folderForRow(row: ResumeFileRow): Promise<string> {
-  const c = row.candidate_id ? await prisma.candidates.findUnique({ where: { id: row.candidate_id }, select: { job_id: true, sources: { select: { name: true } } } }) : null;
-  return (await driveFolderFor(c?.job_id ?? null, c?.sources?.name)) ?? (await google.ensureRootFolder());
+  const c = row.candidate_id ? await prisma.candidates.findUnique({ where: { id: row.candidate_id }, select: { sources: { select: { name: true } } } }) : null;
+  const jobId = row.candidate_id ? await driveFolderJob(row.candidate_id) : null;
+  return (await driveFolderFor(jobId, c?.sources?.name)) ?? (await google.ensureRootFolder());
 }
 
 /** Creates a Drive file with a pre-generated id stored in the job, so a retry after a crash can't make a second file. */
@@ -144,6 +146,18 @@ async function toDrive(job: JobRow, row: ResumeFileRow) {
     await complete(job.id, tx);
   });
   if (followUpRename) await enqueue(row.id, "rename_s3", { name: followUpRename });
+}
+
+/** The person got a newer application: their one Drive file moves to that job's folder. */
+async function moveDrive(job: JobRow, row: ResumeFileRow) {
+  if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
+  if (!row.drive_file_id) return complete(job.id, prisma, "skipped: no Drive file yet (to_drive will use the right folder)");
+  if (!(await google.isConnected())) throw new Error("Google Drive isn't connected");
+  const folder = await folderForRow(row);
+  const meta = await google.getFileMeta(row.drive_file_id);
+  if ((meta.parents ?? []).includes(folder)) return complete(job.id, prisma, "skipped: already in place");
+  await moveDriveFile(row.drive_file_id, folder);
+  return complete(job.id, prisma);
 }
 
 async function renameDrive(job: JobRow, row: ResumeFileRow) {
@@ -244,6 +258,8 @@ export async function runJob(job: JobRow) {
       return toDrive(job, row);
     case "rename_drive":
       return renameDrive(job, row);
+    case "move_drive":
+      return moveDrive(job, row);
     default:
       throw new Error(`Unknown job kind ${job.kind}`);
   }

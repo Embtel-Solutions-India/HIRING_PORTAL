@@ -1,19 +1,24 @@
 import { parseISO } from "date-fns";
-import { ArrowLeft, CalendarPlus, ChevronLeft, ChevronRight, Mail, MapPin, MoreHorizontal, Phone, Star, Trash2, Video } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowLeft, CalendarPlus, ChevronLeft, ChevronRight, Mail, MapPin, MoreHorizontal, Phone, Star, Trash2, Video, XCircle, BriefcasePlus } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { ApplicationCard } from "../components/ApplicationCard";
 import { ContactRow, MoveStageMenu, ResumePreview, SummaryCard } from "../components/candidate";
 import { ComposeEmailModal } from "../components/ComposeEmailModal";
+import { ConsiderForJobModal } from "../components/ConsiderForJobModal";
+import { DuplicateBanner } from "../components/DuplicateBanner";
 import { ScheduleInterviewModal } from "../components/ScheduleInterviewModal";
-import { Avatar, AvatarStack, Badge, Button, EmptyState, IconButton, Menu, MenuItem, StageBadge, Stars, Tabs } from "../components/ui";
+import { Avatar, AvatarStack, Badge, Button, EmptyState, IconButton, Menu, MenuItem, Select, StageBadge, Stars, Tabs } from "../components/ui";
 import { SourceBadge, SourcePicker } from "../components/SourcePicker";
-import { useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
-import { cn, daysSince, fmtDate, fmtDayLabel, fmtTime, fullName, timeAgo, resumeKeptNote } from "../lib/utils";
+import { useApplicationsOf, useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
+import type { CandidateHistory } from "../types";
+import { fmtDate, fmtDayLabel, fmtTime, fullName, timeAgo, resumeKeptNote } from "../lib/utils";
 
 export default function CandidateDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const candidates = useStore((s) => s.candidates);
+  const applications = useStore((s) => s.applications);
   const stages = useStore((s) => s.stages);
   const interviews = useStore((s) => s.interviews);
   const campaigns = useStore((s) => s.campaigns);
@@ -21,7 +26,7 @@ export default function CandidateDetail() {
   const addNote = useStore((s) => s.addNote);
   const setRating = useStore((s) => s.setRating);
   const toggleStar = useStore((s) => s.toggleStar);
-  const moveStage = useStore((s) => s.moveStage);
+  const requestMove = useStore((s) => s.requestMove);
   const deleteCandidates = useStore((s) => s.deleteCandidates);
   const settings = useStore((s) => s.settings);
   const toast = useStore((s) => s.toast);
@@ -37,26 +42,45 @@ export default function CandidateDetail() {
   const canDelete = useCan("candidates.delete");
 
   const [note, setNote] = useState("");
+  const [noteAppId, setNoteAppId] = useState("");
   const [tab, setTab] = useState<"notes" | "interviews" | "emails" | "activity">("notes");
   const [emailOpen, setEmailOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [considerOpen, setConsiderOpen] = useState(false);
 
+  const fetchHistory = useStore((s) => s.fetchHistory);
   const c = candidates.find((x) => x.id === id);
-  const siblings = useMemo(() => (c ? candidates.filter((x) => x.jobId === c.jobId) : []), [candidates, c]);
+  const apps = useApplicationsOf(id);
+  // The header (stage menu, reject, rating, star) and the AI summary act on the selected application; the newest by default.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const app = apps.find((a) => a.id === selectedId) ?? apps[0];
+  const [history, setHistory] = useState<CandidateHistory | null>(null);
+  // Reload the full history whenever something about this person changes.
+  const version = `${id}|${c?.notes.length}|${apps.map((a) => `${a.id}:${a.stageId}:${a.lastActivityAt}`).join(",")}`;
+  useEffect(() => {
+    let live = true;
+    if (id) void fetchHistory(id).then((h) => live && h && setHistory(h));
+    return () => {
+      live = false;
+    };
+  }, [version, id, fetchHistory]);
+  const siblings = useMemo(() => (app ? applications.filter((a) => a.jobId === app.jobId).map((a) => a.candidateId) : []), [applications, app]);
 
-  if (!c) {
+  if (!c || !app) {
     return <EmptyState icon={<ArrowLeft size={18} />} title="Candidate not found" action={<Button onClick={() => navigate("/candidates")}>Back to candidates</Button>} />;
   }
 
-  const pos = siblings.findIndex((x) => x.id === c.id);
+  const pos = siblings.indexOf(c.id);
   const prev = siblings[pos - 1];
   const next = siblings[pos + 1];
-  const myInterviews = interviews.filter((i) => i.candidateId === c.id);
+  const myInterviews = interviews.filter((i) => i.candidateId === c.id).sort((a, b) => apps.findIndex((x) => x.id === a.applicationId) - apps.findIndex((x) => x.id === b.applicationId) || a.start.localeCompare(b.start));
   const myEmails = campaigns.filter((e) => e.recipientIds.includes(c.id));
-  const myActivity = activity.filter((a) => a.candidateId === c.id);
-  const stepStages = stages.filter((s) => s.kind !== "closed");
-  const currentIdx = stepStages.findIndex((s) => s.id === c.stageId);
-  const closed = stageMap[c.stageId]?.kind === "closed";
+  const myActivity = history?.activity ?? activity.filter((a) => a.candidateId === c.id);
+  const closed = stageMap[app.stageId]?.kind === "closed";
+  const isExpanded = (appId: string) => expanded[appId] ?? appId === apps[0]?.id;
+  const jobOf = (appId: string) => jobMap[apps.find((a) => a.id === appId)?.jobId ?? ""]?.title;
+  const closedStage = stages.find((s) => s.kind === "closed");
 
   return (
     <>
@@ -66,12 +90,12 @@ export default function CandidateDetail() {
         </Link>
         <div className="flex items-center gap-1 text-[12px] font-semibold text-muted">
           <span className="hidden sm:inline">
-            {pos + 1} of {siblings.length} in {jobMap[c.jobId]?.title}
+            {pos + 1} of {siblings.length} in {jobMap[app.jobId]?.title}
           </span>
-          <IconButton label="Previous candidate" disabled={!prev} onClick={() => prev && navigate(`/candidates/${prev.id}`)}>
+          <IconButton label="Previous candidate" disabled={!prev} onClick={() => prev && navigate(`/candidates/${prev}`)}>
             <ChevronLeft size={18} />
           </IconButton>
-          <IconButton label="Next candidate" disabled={!next} onClick={() => next && navigate(`/candidates/${next.id}`)}>
+          <IconButton label="Next candidate" disabled={!next} onClick={() => next && navigate(`/candidates/${next}`)}>
             <ChevronRight size={18} />
           </IconButton>
         </div>
@@ -84,10 +108,10 @@ export default function CandidateDetail() {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-[24px] leading-tight font-extrabold tracking-tight">{fullName(c)}</h1>
-              <button onClick={() => toggleStar(c.id)} aria-label={c.starred ? "Unstar" : "Star"} className="rounded p-0.5">
-                <Star size={18} className={c.starred ? "fill-amber-400 text-amber-400" : "text-line-strong hover:text-amber-400"} />
+              <button onClick={() => toggleStar(app.id)} aria-label={app.starred ? "Unstar" : "Star"} className="rounded p-0.5">
+                <Star size={18} className={app.starred ? "fill-amber-400 text-amber-400" : "text-line-strong hover:text-amber-400"} />
               </button>
-              <StageBadge stage={stageMap[c.stageId]} />
+              <StageBadge stage={stageMap[app.stageId]} />
               {canTag ? (
                 <SourcePicker variant="badge" value={c.sourceId} onChange={async (id) => (await setCandidateSource([c.id], id)) && toast(id ? `Source set to ${sourceMap[id]?.name ?? "new source"}` : "Source cleared")} />
               ) : (
@@ -95,7 +119,7 @@ export default function CandidateDetail() {
               )}
             </div>
             <p className="mt-0.5 text-sm text-muted">
-              {[c.currentTitle && `${c.currentTitle}${c.currentCompany ? ` at ${c.currentCompany}` : ""}`, jobMap[c.jobId] ? `applied for ${jobMap[c.jobId]!.title}` : "", `added ${timeAgo(c.appliedAt)}`]
+              {[c.currentTitle && `${c.currentTitle}${c.currentCompany ? ` at ${c.currentCompany}` : ""}`, jobMap[app.jobId] ? `applied for ${jobMap[app.jobId]!.title}` : "", `added ${timeAgo(app.appliedAt)}`]
                 .filter(Boolean)
                 .join(" · ")}
             </p>
@@ -103,11 +127,11 @@ export default function CandidateDetail() {
               <ContactRow candidate={c} />
             </div>
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
-              <Stars value={c.rating} onChange={canNote ? (v) => setRating(c.id, v) : undefined} size={16} />
+              <Stars value={app.rating} onChange={canNote ? (v) => setRating(app.id, v) : undefined} size={16} />
               {c.tags.map((t) => (
                 <Badge key={t}>{t}</Badge>
               ))}
-              {teamMap[c.ownerId] && <span className="text-xs text-muted">Owner: {teamMap[c.ownerId]!.name}</span>}
+              {teamMap[app.ownerId] && <span className="text-xs text-muted">Owner: {teamMap[app.ownerId]!.name}</span>}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -119,7 +143,21 @@ export default function CandidateDetail() {
             <Button icon={<CalendarPlus size={15} />} onClick={() => setScheduleOpen(true)}>
               Schedule
             </Button>
-            <MoveStageMenu candidateIds={[c.id]} currentStageId={c.stageId} align="right" />
+            {canMove && !closed && closedStage && (
+              <Button
+                className="text-danger"
+                icon={<XCircle size={15} />}
+                onClick={async () => (await requestMove([app.id], closedStage.id)) && toast(`Marked “${closedStage.name}”`, "info", { label: "Undo", onClick: () => requestMove([app.id], app.stageId) })}
+              >
+                Reject
+              </Button>
+            )}
+            {canMove && (
+              <Button icon={<BriefcasePlus size={15} />} onClick={() => setConsiderOpen(true)}>
+                Consider for another job
+              </Button>
+            )}
+            <MoveStageMenu applicationIds={[app.id]} currentStageId={app.stageId} align="right" />
             {canDelete && (
               <Menu
                 align="right"
@@ -150,32 +188,26 @@ export default function CandidateDetail() {
           </div>
         </div>
 
-        {/* Stage stepper */}
-        <ol className="scroll-slim mt-5 flex gap-1 overflow-x-auto pb-1">
-          {stepStages.map((s, i) => {
-            const reached = !closed && i <= currentIdx;
-            const isCurrent = s.id === c.stageId;
-            return (
-              <li key={s.id} className="min-w-[110px] flex-1">
-                <button
-                  disabled={!canMove || isCurrent}
-                  onClick={() => {
-                    const from = c.stageId;
-                    moveStage([c.id], s.id);
-                    toast(`Moved to ${s.name}`, "success", { label: "Undo", onClick: () => moveStage([c.id], from) });
-                  }}
-                  className="group w-full text-left disabled:cursor-default"
-                  title={isCurrent ? "Current stage" : `Move to ${s.name}`}
-                >
-                  <span className={cn("block h-1.5 rounded-full transition", reached ? "" : "bg-sunken group-hover:bg-line-strong")} style={reached ? { background: s.color } : undefined} />
-                  <span className={cn("mt-1.5 block truncate text-[12px] font-semibold", isCurrent ? "text-ink" : reached ? "text-ink-2" : "text-faint")}>{s.name}</span>
-                  {isCurrent && <span className="block text-[11px] text-muted">{daysSince(c.stageEnteredAt)} days in stage</span>}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-        {closed && <p className="mt-2 text-[13px] font-semibold text-danger">Marked “{stageMap[c.stageId]?.name}” {timeAgo(c.stageEnteredAt)}</p>}
+        <DuplicateBanner candidate={c} className="mt-4" />
+
+        {/* Applications: one per job, newest first */}
+        <div className="mt-5 space-y-2">
+          {apps.length > 1 && <p className="label">{apps.length} applications</p>}
+          {apps.map((a) => (
+            <ApplicationCard
+              key={a.id}
+              app={a}
+              transitions={(history?.transitions ?? []).filter((t) => t.applicationId === a.id)}
+              expanded={isExpanded(a.id)}
+              selected={a.id === app.id}
+              onToggle={() => setExpanded((e) => ({ ...e, [a.id]: !isExpanded(a.id) }))}
+              onSelect={() => {
+                setSelectedId(a.id);
+                setExpanded((e) => ({ ...e, [a.id]: true }));
+              }}
+            />
+          ))}
+        </div>
       </section>
 
       <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.2fr_1fr]">
@@ -184,7 +216,7 @@ export default function CandidateDetail() {
         </section>
 
         <div className="space-y-5">
-          <SummaryCard candidate={c} />
+          <SummaryCard candidate={c} app={app} />
 
           <section className="card">
             <Tabs
@@ -206,12 +238,20 @@ export default function CandidateDetail() {
                       onSubmit={(e) => {
                         e.preventDefault();
                         if (!note.trim()) return;
-                        addNote(c.id, note.trim());
+                        addNote(c.id, note.trim(), noteAppId || app.id);
                         setNote("");
                       }}
                     >
                       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="Share feedback with the team… (visible to everyone with access)" className="field resize-none" aria-label="New note" />
-                      <div className="mt-2 flex justify-end">
+                      <div className="mt-2 flex items-center justify-end gap-2">
+                        {apps.length > 1 && (
+                          <Select
+                            ariaLabel="Job this note is about"
+                            value={noteAppId || app.id}
+                            onChange={setNoteAppId}
+                            options={apps.map((a) => ({ value: a.id, label: jobMap[a.jobId]?.title ?? "No job" }))}
+                          />
+                        )}
                         <Button type="submit" size="sm" variant="primary" disabled={!note.trim()}>
                           Add note
                         </Button>
@@ -229,6 +269,7 @@ export default function CandidateDetail() {
                         <div className="min-w-0 flex-1">
                           <p className="text-[13px]">
                             <b className="font-semibold">{a?.name ?? (fromBooking ? "From the booking page" : "Deleted user")}</b> <span className="text-xs text-faint">· {timeAgo(n.createdAt)}</span>
+                            {n.applicationId && jobOf(n.applicationId) && <Badge className="ml-1.5">{jobOf(n.applicationId)}</Badge>}
                           </p>
                           <p className="mt-0.5 text-[13.5px] leading-relaxed text-ink-2">{n.body}</p>
                         </div>
@@ -243,8 +284,10 @@ export default function CandidateDetail() {
                   {myInterviews.length === 0 && (
                     <EmptyState icon={<CalendarPlus size={18} />} title="No interviews yet" action={<Button size="sm" onClick={() => setScheduleOpen(true)}>Schedule one</Button>} />
                   )}
-                  {myInterviews.map((iv) => (
-                    <div key={iv.id} className="rounded-xl border border-line p-3">
+                  {myInterviews.map((iv, i) => (
+                    <div key={iv.id}>
+                    {apps.length > 1 && myInterviews[i - 1]?.applicationId !== iv.applicationId && <p className="label mt-2 mb-1.5">{jobOf(iv.applicationId) ?? "No job"}</p>}
+                    <div className="rounded-xl border border-line p-3">
                       <div className="flex items-center gap-3">
                         <span className="flex size-9 items-center justify-center rounded-lg bg-paper text-ink-2 ring-1 ring-line">
                           {iv.type === "video" ? <Video size={16} /> : iv.type === "phone" ? <Phone size={16} /> : <MapPin size={16} />}
@@ -268,6 +311,7 @@ export default function CandidateDetail() {
                           <b className="font-semibold">{teamMap[f.authorId]?.name.split(" ")[0]}:</b> {f.recommendation.replace("_", " ")} — {f.comment}
                         </p>
                       ))}
+                    </div>
                     </div>
                   ))}
                 </div>
@@ -304,7 +348,7 @@ export default function CandidateDetail() {
                   <li className="relative text-[13px] text-ink-2">
                     <span className="absolute top-1.5 -left-[21px] size-2.5 rounded-full border-2 border-surface bg-brand-500" />
                     Added to the ATS{sourceMap[c.sourceId] ? ` · source: ${sourceMap[c.sourceId]!.name}` : ""}
-                    <span className="block text-[11px] text-faint">{fmtDate(c.appliedAt)}</span>
+                    <span className="block text-[11px] text-faint">{fmtDate(c.createdAt)}</span>
                   </li>
                 </ol>
               )}
@@ -313,8 +357,19 @@ export default function CandidateDetail() {
         </div>
       </div>
 
+      <ConsiderForJobModal
+        candidate={c}
+        apps={apps}
+        open={considerOpen}
+        onClose={() => setConsiderOpen(false)}
+        onAdded={(newId) => {
+          setConsiderOpen(false);
+          setSelectedId(newId);
+          setExpanded((e) => ({ ...e, [newId]: true }));
+        }}
+      />
       <ComposeEmailModal open={emailOpen} onClose={() => setEmailOpen(false)} recipientIds={[c.id]} />
-      <ScheduleInterviewModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} candidateId={c.id} />
+      <ScheduleInterviewModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} candidateId={c.id} applicationId={app.id} />
     </>
   );
 }

@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Columns3,
   Hand,
+  FileText,
   LayoutDashboard,
   LogOut,
   Mail,
@@ -17,9 +18,10 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { useCurrentUser, useJobMap, useSourceMap, useStageMap, useStore } from "../data/store";
+import { useCurrentUser, useJobMap, useLatestAppMap, useSourceMap, useStageMap, useStore } from "../data/store";
 import { can, ROLE_LABEL, type Permission } from "../lib/permissions";
 import { cn, fullName } from "../lib/utils";
+import { RejectDialog } from "./RejectDialog";
 import { Avatar, Badge, Logo, Menu, MenuItem, StageBadge, Toaster } from "./ui";
 
 interface NavItem {
@@ -34,6 +36,7 @@ const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: <LayoutDashboard size={18} />, end: true },
   { to: "/pipeline", label: "Pipeline", icon: <Columns3 size={18} /> },
   { to: "/candidates", label: "Candidates", icon: <Users size={18} /> },
+  { to: "/resumes", label: "Resumes", icon: <FileText size={18} />, permission: "resumes.download" },
   { to: "/review", label: "Swipe review", icon: <Hand size={18} /> },
   { to: "/interviews", label: "Interviews", icon: <CalendarClock size={18} /> },
   { to: "/email", label: "Email", icon: <Mail size={18} />, permission: "emails.sendSingle" },
@@ -123,6 +126,7 @@ export function AppShell() {
         )}
       </AnimatePresence>
       <Toaster />
+      <RejectDialog />
     </div>
   );
 }
@@ -227,6 +231,7 @@ function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
 
 function GlobalSearch() {
   const candidates = useStore((s) => s.candidates);
+  const latest = useLatestAppMap();
   const stageMap = useStageMap();
   const jobMap = useJobMap();
   const sourceMap = useSourceMap();
@@ -252,10 +257,10 @@ function GlobalSearch() {
     if (!term) return [];
     return candidates
       .filter((c) =>
-        [fullName(c), c.email, c.currentTitle, c.currentCompany, jobMap[c.jobId]?.title ?? "", sourceMap[c.sourceId]?.name ?? "", ...c.skills].join(" ").toLowerCase().includes(term),
+        [fullName(c), c.email, c.currentTitle, c.currentCompany, jobMap[latest[c.id]?.jobId ?? ""]?.title ?? "", sourceMap[c.sourceId]?.name ?? "", ...c.skills].join(" ").toLowerCase().includes(term),
       )
       .slice(0, 7);
-  }, [q, candidates, jobMap, sourceMap]);
+  }, [q, candidates, jobMap, sourceMap, latest]);
 
   const go = (id: string) => {
     navigate(`/candidates/${id}`);
@@ -304,10 +309,10 @@ function GlobalSearch() {
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-semibold">{fullName(c)}</span>
                   <span className="block truncate text-xs text-muted">
-                    {c.currentTitle} · {jobMap[c.jobId]?.title}
+                    {c.currentTitle} · {jobMap[latest[c.id]?.jobId ?? ""]?.title}
                   </span>
                 </span>
-                <StageBadge stage={stageMap[c.stageId]} />
+                <StageBadge stage={stageMap[latest[c.id]?.stageId ?? ""]} />
               </button>
             ))
           )}

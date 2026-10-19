@@ -1,6 +1,7 @@
 /** No-login endpoints: candidate self-booking and email tracking. */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { bookingApplication } from "../applications.ts";
 import { config } from "../config.ts";
 import { verifySignature } from "../crypto.ts";
 import { prisma } from "../db.ts";
@@ -96,7 +97,7 @@ export default async function publicRoutes(app: FastifyInstance) {
     const candidate =
       (isUuid(body.candidateId) ? await prisma.candidates.findUnique({ where: { id: body.candidateId }, select: { id: true, email: true } }) : null) ??
       // Raw so the comparison stays an exact lower() match (uses candidates_email_idx), not ILIKE.
-      (await prisma.$queryRaw<{ id: string; email: string }[]>`select id, email from candidates where lower(email) = lower(${body.email}) order by applied_at desc limit 1`)[0];
+      (await prisma.$queryRaw<{ id: string; email: string }[]>`select id, email from candidates where lower(email) = lower(${body.email}) order by created_at desc limit 1`)[0];
     if (!candidate) throw new HttpError(404, "We couldn't find your application. Please use the link from the email we sent you.");
 
     // Re-check the slot is still open and pick the host.
@@ -106,8 +107,11 @@ export default async function publicRoutes(app: FastifyInstance) {
     if (!slot) throw new HttpError(409, "Sorry, that time was just taken. Please pick another.");
 
     if (!candidate.email && body.email) await prisma.candidates.updateMany({ where: { id: candidate.id }, data: { email: body.email } });
+    // The booking is for the job they're being considered for now.
+    const applicationId = await bookingApplication(candidate.id);
+    if (!applicationId) throw new HttpError(404, "We couldn't find your application. Please use the link from the email we sent you.");
     const id = await createInterview({
-      candidateId: candidate.id,
+      applicationId,
       title: link.title,
       type: link.type,
       start,

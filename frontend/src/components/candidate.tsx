@@ -2,10 +2,10 @@ import { ArrowRight, Download, ExternalLink, FileText, Loader2, Mail, MapPin, Ph
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DocxViewer } from "./DocxViewer";
 import { PdfViewer } from "./PdfViewer";
-import { useCan, useJobMap, useStageMap, useStore } from "../data/store";
-import type { Candidate } from "../types";
+import { useCan, useStore } from "../data/store";
+import type { Application, Candidate } from "../types";
 import { cn, fmtDate, fullName } from "../lib/utils";
-import { Badge, Button, Checkbox, DriveMark, MatchScore, Menu, MenuItem, StageBadge } from "./ui";
+import { Badge, Button, Checkbox, DriveMark, MatchScore, Menu, MenuItem } from "./ui";
 
 export const resumeUrl = (candidateId: string, kind: "preview" | "download", version?: string) =>
   `/api/candidates/${candidateId}/resume/${kind}${version ? `?v=${encodeURIComponent(version)}` : ""}`;
@@ -106,7 +106,7 @@ export function ResumePreview({ candidate, compact }: { candidate: Candidate; co
 }
 
 function ParsedResume({ candidate, compact, notice }: { candidate: Candidate; compact?: boolean; notice?: string }) {
-  const pending = candidate.summary.status === "pending";
+  const pending = candidate.parseStatus === "pending";
   return (
     <article className={cn("resume-paper mx-auto max-w-[680px] rounded-sm text-[#222]", compact ? "px-5 py-6" : "px-7 py-8 sm:px-10 sm:py-10")}>
       {notice && <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-[12px] text-amber-900">{notice} — showing the parsed version.</p>}
@@ -178,8 +178,9 @@ function ParsedResume({ candidate, compact, notice }: { candidate: Candidate; co
   );
 }
 
-export function SummaryCard({ candidate, className }: { candidate: Candidate; className?: string }) {
-  const s = candidate.summary;
+/** The AI match for one application (its job), with the person's skills. */
+export function SummaryCard({ candidate, app, className }: { candidate: Candidate; app: Application; className?: string }) {
+  const s = app.summary;
   const pending = s.status === "pending";
   const canRetry = useCan("candidates.edit");
   const resummarize = useStore((st) => st.resummarize);
@@ -193,7 +194,7 @@ export function SummaryCard({ candidate, className }: { candidate: Candidate; cl
             <p className="mt-0.5 text-[13px] leading-snug text-muted">{s.overview}</p>
           </div>
           {canRetry && (
-            <Button size="sm" icon={<RefreshCw size={13} />} onClick={() => resummarize(candidate.id)}>
+            <Button size="sm" icon={<RefreshCw size={13} />} onClick={() => resummarize(app.id)}>
               Retry
             </Button>
           )}
@@ -295,14 +296,14 @@ export function ContactRow({ candidate }: { candidate: Candidate }) {
 
 /** Stage picker used on detail pages, swipe review and bulk actions. */
 export function MoveStageMenu({
-  candidateIds,
+  applicationIds,
   currentStageId,
   align = "left",
   label = "Move stage",
   size = "md",
   onMoved,
 }: {
-  candidateIds: string[];
+  applicationIds: string[];
   currentStageId?: string;
   align?: "left" | "right";
   label?: string;
@@ -310,7 +311,7 @@ export function MoveStageMenu({
   onMoved?: (stageId: string) => void;
 }) {
   const stages = useStore((s) => s.stages);
-  const moveStage = useStore((s) => s.moveStage);
+  const requestMove = useStore((s) => s.requestMove);
   const toast = useStore((s) => s.toast);
   const allowed = useCan("candidates.moveStage");
   const canEmail = useCan("emails.sendSingle");
@@ -320,7 +321,7 @@ export function MoveStageMenu({
       align={align}
       width={260}
       trigger={({ toggle }) => (
-        <Button size={size} variant="primary" onClick={toggle} disabled={!allowed || candidateIds.length === 0} icon={<ArrowRight size={15} />}>
+        <Button size={size} variant="primary" onClick={toggle} disabled={!allowed || applicationIds.length === 0} icon={<ArrowRight size={15} />}>
           {label}
         </Button>
       )}
@@ -331,16 +332,16 @@ export function MoveStageMenu({
             <MenuItem
               key={st.id}
               active={st.id === currentStageId}
-              onClick={() => {
+              onClick={async () => {
                 const prev = currentStageId;
-                moveStage(candidateIds, st.id, { notify: notify && canEmail });
+                close();
+                if (!(await requestMove(applicationIds, st.id, { notify: notify && canEmail }))) return;
                 toast(
-                  `${candidateIds.length > 1 ? `${candidateIds.length} candidates` : "Candidate"} moved to ${st.name}${notify && canEmail && st.autoEmailTemplateId ? " · email sent" : ""}`,
+                  `${applicationIds.length > 1 ? `${applicationIds.length} candidates` : "Candidate"} moved to ${st.name}${notify && canEmail && st.autoEmailTemplateId ? " · email sent" : ""}`,
                   "success",
-                  prev && candidateIds.length === 1 ? { label: "Undo", onClick: () => moveStage(candidateIds, prev) } : undefined,
+                  prev && applicationIds.length === 1 ? { label: "Undo", onClick: () => requestMove(applicationIds, prev) } : undefined,
                 );
                 onMoved?.(st.id);
-                close();
               }}
               icon={<span className="size-2.5 rounded-full" style={{ background: st.color }} />}
             >
@@ -356,19 +357,5 @@ export function MoveStageMenu({
         </>
       )}
     </Menu>
-  );
-}
-
-export function CandidateLine({ candidate, showStage = true }: { candidate: Candidate; showStage?: boolean }) {
-  const jobMap = useJobMap();
-  const stageMap = useStageMap();
-  return (
-    <span className="flex min-w-0 items-center gap-2">
-      <span className="min-w-0">
-        <span className="block truncate text-sm font-semibold">{fullName(candidate)}</span>
-        <span className="block truncate text-xs text-muted">{jobMap[candidate.jobId]?.title}</span>
-      </span>
-      {showStage && <StageBadge stage={stageMap[candidate.stageId]} className="ml-auto" />}
-    </span>
   );
 }

@@ -2,7 +2,7 @@ import { Clock, FileText, Mail, Pencil, Plus, Send, ShieldCheck, Trash2, Users }
 import { useMemo, useState } from "react";
 import { ComposeEmailModal } from "../components/ComposeEmailModal";
 import { Badge, Button, Checkbox, EmptyState, Field, Modal, PageHeader, Select, Tabs } from "../components/ui";
-import { useCan, useStageMap, useStore, useTeamMap } from "../data/store";
+import { useCan, useCards, useStageMap, useStore, useTeamMap } from "../data/store";
 import type { EmailTemplate } from "../types";
 import { fmtDate, MERGE_FIELDS, uid } from "../lib/utils";
 
@@ -65,7 +65,7 @@ function Stat({ label, value }: { label: string; value: number | string }) {
 
 /** Build an audience by job + stage, then compose. */
 function BulkAudience() {
-  const candidates = useStore((s) => s.candidates);
+  const cards = useCards();
   const jobs = useStore((s) => s.jobs);
   const stages = useStore((s) => s.stages);
   const [jobId, setJobId] = useState("all");
@@ -74,7 +74,10 @@ function BulkAudience() {
   const [open, setOpen] = useState(false);
   const templates = useStore((s) => s.templates);
 
-  const audience = useMemo(() => candidates.filter((c) => (jobId === "all" || c.jobId === jobId) && stageIds.includes(c.stageId)), [candidates, jobId, stageIds]);
+  const audience = useMemo(() => {
+    const people = cards.filter(({ app }) => (jobId === "all" || app.jobId === jobId) && stageIds.includes(app.stageId)).map(({ candidate }) => candidate);
+    return [...new Map(people.map((c) => [c.id, c])).values()];
+  }, [cards, jobId, stageIds]);
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
@@ -90,7 +93,7 @@ function BulkAudience() {
             <div className="flex flex-wrap gap-2">
               {stages.map((s) => {
                 const on = stageIds.includes(s.id);
-                const n = candidates.filter((c) => c.stageId === s.id && (jobId === "all" || c.jobId === jobId)).length;
+                const n = cards.filter(({ app }) => app.stageId === s.id && (jobId === "all" || app.jobId === jobId)).length;
                 return (
                   <label key={s.id} className="flex cursor-pointer items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[13px] font-semibold">
                     <Checkbox checked={on} onChange={(v) => setStageIds((x) => (v ? [...x, s.id] : x.filter((i) => i !== s.id)))} label={s.name} />

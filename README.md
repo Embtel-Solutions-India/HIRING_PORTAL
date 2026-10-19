@@ -51,6 +51,18 @@ To change the schema: edit `schema.prisma`, run `npx prisma migrate dev --create
 
 To use a hosted database such as Supabase, set `DATABASE_URL` (the app's connection, e.g. the transaction pooler) and `DIRECT_URL` (used for migrations, e.g. the session pooler) in `backend/.env` or `.env`.
 
+Migrations run automatically when the server starts. A **development** server (`npm run dev`) skips them, with a warning, when the database is remote, so a `backend/.env` that points at production can't change it by accident. Set `ALLOW_REMOTE_MIGRATIONS=true` to override. Production (`NODE_ENV=production`) always migrates.
+
+Checks (the `-db` ones need the local database from `npm run dev:db`, and refuse to run against anything else):
+
+```bash
+cd backend
+npm run check:sync              # resume sync rules
+npm run check:pool              # candidate pool filters
+DATABASE_URL=postgres://postgres:postgres@localhost:5433/hirely DIRECT_URL=postgres://postgres:postgres@localhost:5433/hirely npm run check:sync-db
+DATABASE_URL=postgres://postgres:postgres@localhost:5433/hirely DIRECT_URL=postgres://postgres:postgres@localhost:5433/hirely npm run check:applications-db
+```
+
 Type-check both projects:
 
 ```bash

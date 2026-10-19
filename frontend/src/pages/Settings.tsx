@@ -1,9 +1,9 @@
 import { ArrowDown, ArrowUp, CircleAlert, CircleCheck, Copy, FolderOpen, Plus, RefreshCw, Send, Server, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Avatar, Badge, Button, CalendarMark, DriveMark, Field, GoogleMark, PageHeader, Select, Tabs, Toggle } from "../components/ui";
+import { Avatar, Badge, Button, CalendarMark, DriveMark, Field, GoogleMark, IconButton, PageHeader, Select, Tabs, Toggle } from "../components/ui";
 import { SOURCE_COLORS } from "../components/SourcePicker";
-import { useCan, useStore, useTeamMap } from "../data/store";
+import { useCan, useCurrentUser, useStore, useTeamMap } from "../data/store";
 import type { ActivityEvent, Stage } from "../types";
 import ResumeSync from "./ResumeSync";
 import { cn, fmtDate, timeAgo, uid } from "../lib/utils";
@@ -11,6 +11,7 @@ import { cn, fmtDate, timeAgo, uid } from "../lib/utils";
 const GOOGLE_RESULT: Record<string, [string, "success" | "error"]> = {
   connected: ["Google Workspace connected — Drive and Calendar are ready", "success"],
   no_refresh_token: ["Google didn't grant offline access. Disconnect the app at myaccount.google.com/permissions and try again.", "error"],
+  wrong_account: ["Pick the Google account that owns the shared Drive on Google's screen and try again.", "error"],
   missing_scopes: ["Please tick both Drive and Calendar on Google's consent screen and try again.", "error"],
   access_denied: ["Google connection was cancelled", "error"],
 };
@@ -56,7 +57,12 @@ export default function Settings() {
       {tab === "integrations" && <Integrations />}
       {tab === "sources" && <SourcesSettings />}
       {tab === "email" && <EmailDomain />}
-      {tab === "pipeline" && <PipelineStages />}
+      {tab === "pipeline" && (
+        <div className="space-y-5">
+          <PipelineStages />
+          <RejectionReasons />
+        </div>
+      )}
       {tab === "audit" && <AuditLog />}
       {tab === "sync" && <ResumeSync />}
     </>
@@ -108,6 +114,8 @@ function Integrations() {
   const [syncing, setSyncing] = useState(false);
   const g = settings.google;
   const sys = settings.system;
+  const me = useCurrentUser();
+  const isOwner = !!sys?.googleOwnerEmail && me?.email.toLowerCase() === sys.googleOwnerEmail;
   const [folder, setFolder] = useState(g.driveRootFolder);
   const [calendarId, setCalendarId] = useState(g.calendarId);
   useEffect(() => setFolder(g.driveRootFolder), [g.driveRootFolder]);
@@ -144,8 +152,11 @@ function Integrations() {
             ))}
           </span>
         </Row>
+        {!isOwner && sys?.googleOwnerEmail && (
+          <p className="text-[13px] text-muted">Only {sys.googleOwnerEmail} can connect or disconnect Google.</p>
+        )}
         <div className="flex justify-end gap-2">
-          {g.connected && (
+          {g.connected && isOwner && (
             <Button
               variant="ghost"
               className="text-danger"
@@ -157,14 +168,14 @@ function Integrations() {
               Disconnect
             </Button>
           )}
-          <Button variant={g.connected ? "secondary" : "primary"} disabled={!sys?.googleOAuthConfigured} icon={<GoogleMark size={14} />} onClick={() => (window.location.href = "/api/integrations/google/start")}>
+          <Button variant={g.connected ? "secondary" : "primary"} disabled={!sys?.googleOAuthConfigured || !isOwner} icon={<GoogleMark size={14} />} onClick={() => (window.location.href = "/api/integrations/google/start")}>
             {g.connected ? "Reconnect" : "Connect Google"}
           </Button>
         </div>
       </Section>
 
       <Section icon={<DriveMark size={20} />} title="Google Drive · resumes" description="Each job gets a folder. Drop resumes into it and they're imported automatically.">
-        <Field label="Root folder (in the connected account's My Drive)" hint="Created if it doesn't exist. Use / for sub-folders.">
+        <Field label="Root folder (in the connected account's My Drive)" hint="Created if it doesn't exist. Use / for sub-folders. Changing it moves the existing job folders and resumes over.">
           <div className="flex gap-2">
             <span className="relative flex-1">
               <FolderOpen size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted" />
@@ -372,10 +383,63 @@ function EmailDomain() {
   );
 }
 
+/** The reasons offered whenever someone moves a candidate to a closed stage. Used reasons can only be turned off. */
+function RejectionReasons() {
+  const reasons = useStore((s) => s.rejectionReasons);
+  const save = useStore((s) => s.saveRejectionReasons);
+  const toast = useStore((s) => s.toast);
+  const [draft, setDraft] = useState(reasons.map((r) => ({ id: r.id as string | undefined, label: r.label, active: r.active })));
+  const [edited, setEdited] = useState(false);
+  useEffect(() => {
+    if (!edited) setDraft(reasons.map((r) => ({ id: r.id, label: r.label, active: r.active })));
+  }, [reasons, edited]);
+  const change = (next: typeof draft) => {
+    setDraft(next);
+    setEdited(true);
+  };
+  return (
+    <section className="card">
+      <div className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4">
+        <div className="flex-1">
+          <h2 className="font-bold">Rejection reasons</h2>
+          <p className="text-[13px] text-muted">Asked every time a candidate moves to a closed stage. Reasons already used stay in history; removing one just turns it off.</p>
+        </div>
+        <Button icon={<Plus size={15} />} onClick={() => change([...draft, { id: undefined, label: "New reason", active: true }])}>
+          Add reason
+        </Button>
+        <Button
+          variant="primary"
+          disabled={!edited || draft.some((r) => !r.label.trim()) || !draft.some((r) => r.active)}
+          onClick={async () => {
+            if (await save(draft.map((r) => ({ ...r, label: r.label.trim() })))) {
+              setEdited(false);
+              toast("Reasons saved");
+            }
+          }}
+        >
+          Save changes
+        </Button>
+      </div>
+      <ul className="divide-y divide-line">
+        {draft.map((r, i) => (
+          <li key={r.id ?? `new-${i}`} className="flex items-center gap-3 px-5 py-2.5">
+            <span className="tabular w-5 text-[12px] font-semibold text-faint">{i + 1}</span>
+            <input className="field h-9 flex-1" maxLength={60} value={r.label} onChange={(e) => change(draft.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} aria-label={`Reason ${i + 1}`} />
+            <Toggle checked={r.active} onChange={(v) => change(draft.map((x, j) => (j === i ? { ...x, active: v } : x)))} label={`Offer “${r.label}”`} />
+            <IconButton label={`Remove ${r.label}`} onClick={() => change(draft.filter((_, j) => j !== i))}>
+              <Trash2 size={15} />
+            </IconButton>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function PipelineStages() {
   const stages = useStore((s) => s.stages);
   const templates = useStore((s) => s.templates);
-  const candidates = useStore((s) => s.candidates);
+  const applications = useStore((s) => s.applications);
   const setStages = useStore((s) => s.setStages);
   const toast = useStore((s) => s.toast);
   const [draft, setDraftRaw] = useState<Stage[]>(stages);
@@ -421,7 +485,7 @@ function PipelineStages() {
       </div>
       <ul className="divide-y divide-line">
         {draft.map((s, i) => {
-          const count = candidates.filter((c) => c.stageId === s.id).length;
+          const count = applications.filter((a) => a.stageId === s.id).length;
           return (
             <li key={s.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
               <span className="flex flex-col">
@@ -656,6 +720,8 @@ const AUDIT_TYPES: { value: ActivityEvent["type"] | "all"; label: string }[] = [
   { value: "stage_change", label: "Stage changes" },
   { value: "email_sent", label: "Emails" },
   { value: "interview_scheduled", label: "Interviews" },
+  { value: "interview_feedback", label: "Interview feedback" },
+  { value: "candidate_updated", label: "Profile edits" },
   { value: "resume_upload", label: "Resumes" },
   { value: "user_invited", label: "Invites" },
   { value: "role_changed", label: "Role changes" },

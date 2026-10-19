@@ -1,8 +1,7 @@
-import { clsx, type ClassValue } from "clsx";
 import { differenceInCalendarDays, format, formatDistanceToNowStrict, isToday, isTomorrow, parseISO } from "date-fns";
 import type { Candidate, Job, Stage } from "../types";
 
-export const cn = (...inputs: ClassValue[]) => clsx(inputs);
+export const cn = (...classes: (string | false | null | undefined)[]) => classes.filter(Boolean).join(" ");
 
 export const uid = (prefix = "id") => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 

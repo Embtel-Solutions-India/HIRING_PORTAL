@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ResumeFile } from "../../frontend/src/types.ts";
 import { logActivity } from "./activity.ts";
 import { analyzeResume } from "./ai.ts";
+import { createApplication, findDuplicate } from "./applications.ts";
 import { prisma } from "./db.ts";
 import { basicParse, extractResumeText } from "./resume.ts";
 import { getSetting } from "./settings.ts";
@@ -18,20 +19,13 @@ export async function createCandidate(input: {
   actorId: string | null;
 }): Promise<string> {
   const guess = basicParse("", input.resume.fileName);
-  const stage = await prisma.stages.findFirst({ where: { kind: "active" }, orderBy: { position: "asc" }, select: { id: true } });
-  const row = await prisma.candidates.create({
-    data: {
-      first_name: guess.firstName,
-      last_name: guess.lastName,
-      job_id: input.jobId,
-      stage_id: stage!.id,
-      source_id: input.sourceId,
-      owner_id: input.actorId,
-      resume: { ...input.resume },
-      parse_status: "pending",
-      tags: ["New"],
-    },
-    select: { id: true },
+  const row = await prisma.$transaction(async (tx) => {
+    const c = await tx.candidates.create({
+      data: { first_name: guess.firstName, last_name: guess.lastName, source_id: input.sourceId, resume: { ...input.resume }, parse_status: "pending", tags: ["New"] },
+      select: { id: true },
+    });
+    await createApplication({ candidateId: c.id, jobId: input.jobId, actorId: input.actorId }, tx);
+    return c;
   });
   const src = input.sourceId ? await prisma.sources.findUnique({ where: { id: input.sourceId }, select: { name: true } }) : null;
   await logActivity(
@@ -75,16 +69,21 @@ export async function resumePendingParses() {
 }
 
 async function parseCandidate(id: string, attempt = 1): Promise<void> {
-  const c = await prisma.candidates.findUnique({ where: { id }, select: { resume: true, job_id: true } });
+  const c = await prisma.candidates.findUnique({ where: { id }, select: { resume: true } });
   const resume = c?.resume as ResumeFile | null | undefined;
   if (!c || !resume) return;
   try {
     const file = await readResume(resume);
     const text = await extractResumeText(file.data, file.mimeType);
     const basic = basicParse(text, resume.fileName);
-    const job = c.job_id ? await prisma.jobs.findUnique({ where: { id: c.job_id }, select: { title: true, description: true, department: true } }) : null;
+    // The match score is per job: score every open application; with none open, the most recent one.
+    const appSelect = { id: true, jobs: { select: { title: true, description: true, department: true } } } as const;
+    const open = await prisma.applications.findMany({ where: { candidate_id: id, stages: { kind: "active" } }, orderBy: { created_at: "desc" }, select: appSelect });
+    const apps = open.length ? open : await prisma.applications.findMany({ where: { candidate_id: id }, orderBy: { last_activity_at: "desc" }, take: 1, select: appSelect });
     const org = await getSetting("org");
-    const ai = org.aiSummariesEnabled ? await analyzeResume(text, job ?? null) : null;
+    // ponytail: one AI call per open application; split profile extraction from scoring if cost matters.
+    const results = org.aiSummariesEnabled ? await Promise.all(apps.map(async (a) => ({ id: a.id, ai: await analyzeResume(text, a.jobs ?? null) }))) : [];
+    const ai = results[0]?.ai ?? null;
 
     // Empty email/phone keep whatever is already on file.
     const email = (ai?.email || basic.email) || undefined;
@@ -101,23 +100,22 @@ async function parseCandidate(id: string, attempt = 1): Promise<void> {
           skills: ai.skills,
           experience: ai.experience,
           education: ai.education,
-          summary: {
-            headline: ai.headline,
-            overview: ai.overview,
-            strengths: ai.strengths,
-            concerns: ai.concerns,
-            matchScore: ai.matchScore,
-            yearsExperience: ai.yearsExperience,
-            generatedAt: new Date().toISOString(),
-          },
           resume_text: text,
           parse_status: "ready",
         }
       : { first_name: basic.firstName, last_name: basic.lastName, email, phone, resume_text: text, parse_status: "ready" };
+    const summaries = results.flatMap(({ id: appId, ai: r }) =>
+      r
+        ? [prisma.applications.updateMany({ where: { id: appId }, data: { summary: { headline: r.headline, overview: r.overview, strengths: r.strengths, concerns: r.concerns, matchScore: r.matchScore, yearsExperience: r.yearsExperience, generatedAt: new Date().toISOString() } } })]
+        : [],
+    );
     await prisma.$transaction([
       prisma.candidates.updateMany({ where: { id }, data }),
       prisma.$executeRaw`update candidates set tags = array_remove(tags, 'New') where id = ${id}::uuid`,
+      ...summaries,
     ]);
+    // Now that email/phone are known, flag a likely earlier record of the same person for a recruiter to check.
+    await prisma.candidates.updateMany({ where: { id }, data: { possible_duplicate_of: await findDuplicate(id) } });
   } catch (e) {
     const retryable = e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || e instanceof Anthropic.APIConnectionError;
     if (retryable && attempt < 4) {

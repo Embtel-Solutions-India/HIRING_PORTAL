@@ -12,6 +12,7 @@ import { sendDueCampaigns } from "./email.ts";
 import { HttpError, loadUser } from "./http.ts";
 import { resumePendingParses } from "./pipeline.ts";
 import adminRoutes from "./routes/admin.ts";
+import applicationRoutes from "./routes/applications.ts";
 import authRoutes from "./routes/auth.ts";
 import bootstrapRoutes from "./routes/bootstrap.ts";
 import candidateRoutes from "./routes/candidates.ts";
@@ -59,6 +60,7 @@ app.get("/api/health", async () => {
 await app.register(authRoutes);
 await app.register(bootstrapRoutes);
 await app.register(candidateRoutes);
+await app.register(applicationRoutes);
 await app.register(interviewRoutes);
 await app.register(adminRoutes);
 await app.register(driveRoutes);
@@ -72,10 +74,12 @@ if (hasFrontend) {
   await app.register(fastifyStatic, { root: config.frontendDist, wildcard: false, index: false, maxAge: "1h" });
 }
 app.setNotFoundHandler((req, reply) => {
-  if (req.url.startsWith("/api/") || req.url.startsWith("/t/") || req.method !== "GET") return reply.status(404).send({ error: "Not found" });
+  // A missing /assets file (an old bundle after a deploy) must 404, not come back as cacheable HTML.
+  if (req.url.startsWith("/api/") || req.url.startsWith("/t/") || req.url.startsWith("/assets/") || req.method !== "GET") return reply.status(404).send({ error: "Not found" });
   if (!hasFrontend) return reply.status(404).type("text/plain").send("Frontend not built. Run `npm run build` in /frontend, or use the Vite dev server.");
+  // index.html names the current bundle, so browsers must re-check it on every load (sendFile would set max-age=1h).
   reply.header("cache-control", "no-cache");
-  return reply.sendFile("index.html");
+  return reply.sendFile("index.html", { cacheControl: false });
 });
 
 // ---------- background work ----------

@@ -35,12 +35,19 @@ for (const c of seedCandidates) {
   await prisma.candidates.create({
     data: {
       id: id(c.id), first_name: c.firstName, last_name: c.lastName, email: c.email, phone: c.phone, location: c.location, current_title: c.currentTitle, current_company: c.currentCompany,
-      job_id: id(c.jobId), stage_id: c.stageId, source_id: c.sourceId || null, applied_at: c.appliedAt, stage_entered_at: c.stageEnteredAt,
-      owner_id: id(c.ownerId), rating: c.rating, starred: c.starred, tags: c.tags, skills: c.skills, experience: c.experience.map((e) => ({ ...e })), education: c.education.map((e) => ({ ...e })), summary: { ...c.summary },
+      source_id: c.sourceId || null, tags: c.tags, skills: c.skills, experience: c.experience.map((e) => ({ ...e })), education: c.education.map((e) => ({ ...e })),
       resume: { ...c.resume, storage: "local", driveFileId: "", uploadedById: id(c.resume.uploadedById) },
     },
   });
-  for (const n of c.notes) await prisma.notes.create({ data: { candidate_id: id(c.id), author_id: id(n.authorId), body: n.body, created_at: n.createdAt } });
+  // Each demo person has one application, sharing their id (as migrated data does).
+  await prisma.applications.create({
+    data: {
+      id: id(c.id), candidate_id: id(c.id), job_id: id(c.jobId), stage_id: c.stageId, applied_at: c.appliedAt, stage_entered_at: c.stageEnteredAt, last_activity_at: c.stageEnteredAt,
+      owner_id: id(c.ownerId), rating: c.rating, starred: c.starred, summary: { ...c.summary },
+    },
+  });
+  await prisma.stage_transitions.create({ data: { application_id: id(c.id), from_stage_id: null, to_stage_id: c.stageId, created_at: c.stageEnteredAt } });
+  for (const n of c.notes) await prisma.notes.create({ data: { candidate_id: id(c.id), application_id: id(c.id), author_id: id(n.authorId), body: n.body, created_at: n.createdAt } });
 }
 for (const l of seedBookingLinks) {
   await prisma.booking_links.createMany({
@@ -54,7 +61,7 @@ for (const l of seedBookingLinks) {
 for (const i of seedInterviews) {
   await prisma.interviews.create({
     data: {
-      id: id(i.id), candidate_id: id(i.candidateId), job_id: id(i.jobId), title: i.title, type: i.type, start_at: i.start, duration_min: i.durationMin,
+      id: id(i.id), candidate_id: id(i.candidateId), application_id: id(i.applicationId), job_id: id(i.jobId), title: i.title, type: i.type, start_at: i.start, duration_min: i.durationMin,
       interviewer_ids: i.interviewerIds.map(id), meet_link: i.meetLink ?? null, location: i.location ?? null, status: i.status,
     },
   });

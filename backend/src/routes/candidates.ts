@@ -1,29 +1,23 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { can } from "../../../frontend/src/lib/permissions.ts";
 import type { ResumeFile } from "../../../frontend/src/types.ts";
-import { logActivity } from "../activity.ts";
+import { fullName, logActivity, touchCandidate } from "../activity.ts";
+import { addNote, createApplication, keepSeparate, mergeCandidate } from "../applications.ts";
 import { prisma } from "../db.ts";
 import { config } from "../config.ts";
-import { createCampaign } from "../email.ts";
 import * as google from "../google.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
-import { createCandidate, enqueueParse } from "../pipeline.ts";
-import { markCandidatesDeleted, renameInS3, syncCandidateResume } from "../resume-files.ts";
+import { createCandidate } from "../pipeline.ts";
+import { editableResumeRow, markCandidatesDeleted, renameInS3, replaceResumeFile } from "../resume-files.ts";
 import { docxToHtml } from "../resume.ts";
 import * as s3 from "../s3.ts";
-import { mimeFor, readResume, storeResume } from "../storage.ts";
+import { readResume, storeResume } from "../storage.ts";
 import { enqueue } from "../sync-queue.ts";
-import { digest, keyPrefix, safeKeyName } from "../sync-rules.ts";
+import { digest } from "../sync-rules.ts";
 
-const MoveBody = z.object({ ids: z.array(z.string().uuid()).min(1).max(500), stageId: z.string(), notify: z.boolean().optional() });
 const PatchBody = z
   .object({
-    rating: z.number().int().min(0).max(5),
-    starred: z.boolean(),
     tags: z.array(z.string().max(40)).max(20),
-    ownerId: z.string().uuid().nullable(),
-    jobId: z.string().uuid(),
     firstName: z.string().max(100),
     lastName: z.string().max(100),
     email: z.string().max(200),
@@ -32,44 +26,16 @@ const PatchBody = z
   })
   .partial();
 
-const fullName = (c: { first_name: string; last_name: string }) => `${c.first_name} ${c.last_name}`.trim();
 
 export default async function candidateRoutes(app: FastifyInstance) {
-  app.post("/api/candidates/move", async (req) => {
-    const user = requirePerm(req, "candidates.moveStage");
-    const body = MoveBody.parse(req.body);
-    const stage = await prisma.stages.findUnique({ where: { id: body.stageId } });
-    if (!stage) throw new HttpError(400, "Unknown stage");
-    const moved = await prisma.candidates.updateManyAndReturn({
-      where: { id: { in: body.ids }, stage_id: { not: stage.id } },
-      data: { stage_id: stage.id, stage_entered_at: new Date() },
-      select: { id: true, first_name: true, last_name: true },
-    });
-    for (const c of moved) await logActivity(user.id, "stage_change", `moved ${fullName(c)} to ${stage.name}`, c.id);
-    let emailed = 0;
-    if (body.notify && stage.auto_email_template_id && moved.length && can(user.role, moved.length > 1 ? "emails.sendBulk" : "emails.sendSingle")) {
-      const t = await prisma.email_templates.findUnique({ where: { id: stage.auto_email_template_id } });
-      if (t) {
-        await createCampaign({ recipientIds: moved.map((m) => m.id), subject: t.subject, body: t.body, templateId: t.id, actorId: user.id });
-        emailed = moved.length;
-      }
-    }
-    return { moved: moved.length, emailed };
-  });
-
   app.patch("/api/candidates/:id", async (req) => {
     const { id } = req.params as { id: string };
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     const body = PatchBody.parse(req.body);
-    const profileKeys = ["ownerId", "jobId", "firstName", "lastName", "email", "phone", "location", "tags"] as const;
-    const user = profileKeys.some((k) => k in body) ? requirePerm(req, "candidates.edit") : requirePerm(req, "candidates.addNote");
+    const user = requirePerm(req, "candidates.edit");
     await assertCandidateAccess(user, id);
     const data = {
-      rating: body.rating,
-      starred: body.starred,
       tags: body.tags,
-      owner_id: body.ownerId,
-      job_id: body.jobId,
       first_name: body.firstName,
       last_name: body.lastName,
       email: body.email,
@@ -78,6 +44,14 @@ export default async function candidateRoutes(app: FastifyInstance) {
     };
     if (Object.values(data).every((v) => v === undefined)) return { ok: true };
     await prisma.candidates.updateMany({ where: { id }, data });
+    // Tags are bookkeeping; name and contact changes count as work on the person's open applications.
+    const fields = (["firstName", "lastName", "email", "phone", "location"] as const).filter((k) => body[k] !== undefined);
+    if (fields.length) {
+      await touchCandidate(id);
+      const c = await prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } });
+      const label = fields.map((f) => (f === "firstName" || f === "lastName" ? "name" : f)).filter((f, i, all) => all.indexOf(f) === i);
+      await logActivity(user.id, "candidate_updated", `updated the ${label.join(", ")} on ${fullName(c!)}`, id);
+    }
     return { ok: true };
   });
 
@@ -86,11 +60,78 @@ export default async function candidateRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     await assertCandidateAccess(user, id);
-    const { body } = z.object({ body: z.string().trim().min(1).max(5000) }).parse(req.body);
+    const { body, applicationId } = z.object({ body: z.string().trim().min(1).max(5000), applicationId: z.string().uuid().nullish() }).parse(req.body);
     const c = await prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } });
-    await prisma.notes.create({ data: { candidate_id: id, author_id: user.id, body } });
+    await addNote({ candidateId: id, applicationId, body, actorId: user.id });
     await logActivity(user.id, "note", `added a note on ${fullName(c!)}`, id);
     return { ok: true };
+  });
+
+  /** The flagged look-alike is the same person: fold this record into it. */
+  // Merging deletes a record and replaces a resume, so it needs the same rights as editing candidates (Admin and up).
+  app.post("/api/candidates/:id/merge-into/:targetId", async (req) => {
+    const user = requirePerm(req, "candidates.edit");
+    const { id, targetId } = req.params as { id: string; targetId: string };
+    if (!isUuid(id) || !isUuid(targetId)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    await assertCandidateAccess(user, targetId);
+    await mergeCandidate(id, targetId, user.id);
+    return { ok: true };
+  });
+
+  /** A recruiter says the flagged look-alike is a different person. */
+  app.post("/api/candidates/:id/keep-separate", async (req) => {
+    const user = requirePerm(req, "candidates.edit");
+    const { id } = req.params as { id: string };
+    if (!isUuid(id)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    const c = await prisma.candidates.findUnique({ where: { id }, select: { possible_duplicate_of: true } });
+    if (c?.possible_duplicate_of) await keepSeparate(id, c.possible_duplicate_of);
+    return { ok: true };
+  });
+
+  /** Considers an existing person for another job: a new application; earlier ones keep their outcome. */
+  app.post("/api/candidates/:id/applications", async (req) => {
+    const user = requirePerm(req, "candidates.moveStage");
+    const { id } = req.params as { id: string };
+    if (!isUuid(id)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    const { jobId } = z.object({ jobId: z.string().uuid() }).parse(req.body);
+    const [c, job] = await Promise.all([
+      prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } }),
+      prisma.jobs.findUnique({ where: { id: jobId }, select: { title: true } }),
+    ]);
+    if (!job) throw new HttpError(400, "Unknown job");
+    const appId = await createApplication({ candidateId: id, jobId, actorId: user.id });
+    await logActivity(user.id, "stage_change", `considered ${fullName(c!)} for ${job.title}`, id);
+    const rf = await prisma.resume_files.findUnique({ where: { candidate_id: id }, select: { id: true } });
+    if (rf && (await google.isConnected())) await enqueue(rf.id, "move_drive");
+    return { id: appId };
+  });
+
+  /** A person's full record: every stage move of every application, and all activity (not capped like bootstrap). */
+  app.get("/api/candidates/:id/history", async (req) => {
+    const user = requirePerm(req, "candidates.view");
+    const { id } = req.params as { id: string };
+    if (!isUuid(id)) throw new HttpError(404, "Not found");
+    await assertCandidateAccess(user, id);
+    const [transitions, activity] = await Promise.all([
+      prisma.stage_transitions.findMany({ where: { applications: { candidate_id: id } }, orderBy: { created_at: "asc" } }),
+      prisma.activity.findMany({ where: { candidate_id: id }, orderBy: { created_at: "desc" } }),
+    ]);
+    return {
+      transitions: transitions.map((t) => ({
+        id: t.id,
+        applicationId: t.application_id,
+        fromStageId: t.from_stage_id ?? "",
+        toStageId: t.to_stage_id,
+        actorId: t.actor_id ?? "",
+        reasonLabel: t.reason_label ?? "",
+        note: t.note ?? "",
+        createdAt: t.created_at,
+      })),
+      activity: activity.map((a) => ({ id: a.id, actorId: a.actor_id ?? "system", type: a.type, candidateId: a.candidate_id ?? undefined, message: a.message, createdAt: a.created_at })),
+    };
   });
 
   app.post("/api/candidates/delete", async (req) => {
@@ -100,15 +141,6 @@ export default async function candidateRoutes(app: FastifyInstance) {
     const count = await markCandidatesDeleted(ids);
     await logActivity(user.id, "settings_changed", `deleted ${count} candidate${count === 1 ? "" : "s"} (resumes kept ${config.resumeDeleteGraceDays} days)`);
     return { deleted: count };
-  });
-
-  app.post("/api/candidates/:id/resummarize", async (req) => {
-    requirePerm(req, "candidates.edit");
-    const { id } = req.params as { id: string };
-    if (!isUuid(id)) throw new HttpError(404, "Not found");
-    await prisma.candidates.updateMany({ where: { id }, data: { parse_status: "pending" } });
-    enqueueParse(id);
-    return { ok: true };
   });
 
   // ---------- resume files ----------
@@ -195,42 +227,16 @@ export default async function candidateRoutes(app: FastifyInstance) {
   async function editableResume(user: Parameters<typeof assertCandidateAccess>[0], id: string) {
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     await assertCandidateAccess(user, id);
-    const row = await prisma.resume_files.findUnique({ where: { candidate_id: id } });
-    if (!row?.s3_key) throw new HttpError(409, "This resume hasn't been copied to S3 yet — try again once the migration has finished");
-    if (row.state === "conflict" || row.state === "pending_deletion") throw new HttpError(409, "This resume has a sync issue — resolve it in Settings → Resume sync first");
-    return row;
+    return editableResumeRow(id);
   }
 
   app.post("/api/candidates/:id/resume", async (req) => {
     const user = requirePerm(req, "candidates.edit");
     const { id } = req.params as { id: string };
-    const row = await editableResume(user, id);
+    await editableResume(user, id);
     const part = await req.file();
     if (!part || !/\.(pdf|docx)$/i.test(part.filename)) throw new HttpError(400, "Upload a PDF or Word (.docx) file");
-    const data = await part.toBuffer();
-    const { sha256, md5 } = digest(data);
-    const mimeType = mimeFor(part.filename);
-    const key = `${keyPrefix(row.s3_key!)}/${safeKeyName(part.filename)}`;
-    const versionId = await s3.putVerified(key, data, mimeType, sha256);
-    await prisma.$transaction(async (tx) => {
-      // Only if the sync worker didn't change the resume while we uploaded; otherwise its change would be lost.
-      const { count } = await tx.resume_files.updateMany({
-        where: { id: row.id, s3_key: row.s3_key, s3_version_id: row.s3_version_id, state: { notIn: ["conflict", "pending_deletion"] } },
-        data: { s3_key: key, s3_version_id: versionId, sha256, size_bytes: data.length, file_name: part.filename, mime_type: mimeType, state: "pending", updated_at: new Date() },
-      });
-      if (!count) throw new HttpError(409, "The resume was just updated from Google Drive — check it and try again");
-      const u = await tx.resume_files.findUniqueOrThrow({ where: { id: row.id } });
-      await syncCandidateResume(tx, u);
-      await tx.candidates.update({ where: { id }, data: { parse_status: "pending" } });
-      await enqueue(row.id, "to_drive", { md5 }, tx);
-      if (part.filename !== row.drive_name) await enqueue(row.id, "rename_drive", { name: part.filename }, tx);
-    }).catch(async (e) => {
-      // Lost the race: drop just our upload, never the worker's version.
-      await s3.remove(key, versionId).catch(() => {});
-      throw e;
-    });
-    if (key !== row.s3_key) await s3.remove(row.s3_key!).catch((e) => console.warn("[resume] couldn't remove old key", e));
-    enqueueParse(id);
+    await replaceResumeFile(id, { fileName: part.filename, data: await part.toBuffer() });
     await logActivity(user.id, "resume_upload", `replaced the resume with ${part.filename}`, id);
     return { ok: true };
   });
@@ -245,6 +251,7 @@ export default async function candidateRoutes(app: FastifyInstance) {
     if (fileName === row.file_name) return { ok: true };
     await renameInS3(row, fileName);
     await enqueue(row.id, "rename_drive", { name: fileName });
+    await touchCandidate(id);
     await logActivity(user.id, "resume_upload", `renamed the resume to ${fileName}`, id);
     return { ok: true };
   });

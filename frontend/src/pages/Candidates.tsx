@@ -7,14 +7,31 @@ import { ComposeEmailModal } from "../components/ComposeEmailModal";
 import { SourceBadge, SourcePicker } from "../components/SourcePicker";
 import { UploadResumeModal } from "../components/UploadResumeModal";
 import { Avatar, Button, Checkbox, DriveMark, EmptyState, MatchScore, PageHeader, Select, StageBadge, Stars } from "../components/ui";
-import { useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
-import type { Candidate } from "../types";
+import { useCan, useJobMap, useLatestAppMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
+import type { Application, Candidate as Person } from "../types";
+import { matchesPool, type PoolFilter } from "../lib/pool";
 import { cn, daysSince, fmtDate, fullName, resumeKeptNote } from "../lib/utils";
+
+/** One row per person, showing the application they were most recently worked on for (id = the person). */
+type Candidate = Application & Person & { applicationId: string };
 
 type SortKey = "name" | "match" | "applied" | "inStage" | "rating";
 
 export default function Candidates() {
-  const candidates = useStore((s) => s.candidates);
+  const people = useStore((s) => s.candidates);
+  const latest = useLatestAppMap();
+  const candidates = useMemo<Candidate[]>(
+    () => people.flatMap((c) => (latest[c.id] ? [{ ...latest[c.id]!, ...c, applicationId: latest[c.id]!.id }] : [])),
+    [people, latest],
+  );
+  const appIdOf = (candidateId: string) => latest[candidateId]?.id ?? "";
+  const applications = useStore((s) => s.applications);
+  const rejectionReasons = useStore((s) => s.rejectionReasons);
+  const appsBy = useMemo(() => {
+    const m = new Map<string, typeof applications>();
+    applications.forEach((a) => m.set(a.candidateId, [...(m.get(a.candidateId) ?? []), a]));
+    return m;
+  }, [applications]);
   const jobs = useStore((s) => s.jobs);
   const stages = useStore((s) => s.stages);
   const team = useStore((s) => s.team);
@@ -48,6 +65,11 @@ export default function Candidates() {
     }
   }, [params, setParams]);
   const [owner, setOwner] = useState("all");
+  // Talent pool: past outcomes across all of a person's applications.
+  const [outcome, setOutcome] = useState<PoolFilter["outcome"]>("");
+  const [rejectedFrom, setRejectedFrom] = useState("");
+  const [reasonId, setReasonId] = useState("");
+  const [includeClosed, setIncludeClosed] = useState(true);
   const [starredOnly, setStarredOnly] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "applied", dir: -1 });
   const [selected, setSelected] = useState<string[]>([]);
@@ -57,9 +79,10 @@ export default function Candidates() {
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
+    const pool: PoolFilter = { q: "", jobId: jobId === "all" ? "" : jobId, outcome, rejectedFromStageId: rejectedFrom, reasonId, includeClosed };
     const list = candidates.filter(
       (c) =>
-        (jobId === "all" || c.jobId === jobId) &&
+        matchesPool(c, appsBy.get(c.id) ?? [], stageMap, pool) &&
         (stageId === "all" || c.stageId === stageId) &&
         (source === "all" || (source === "none" ? !sourceMap[c.sourceId] : c.sourceId === source)) &&
         (owner === "all" || c.ownerId === owner) &&
@@ -69,7 +92,7 @@ export default function Candidates() {
     const val = (c: Candidate): string | number =>
       sort.key === "name" ? fullName(c) : sort.key === "match" ? c.summary.matchScore : sort.key === "applied" ? c.appliedAt : sort.key === "inStage" ? -daysSince(c.stageEnteredAt) : c.rating;
     return list.sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : 0) * sort.dir);
-  }, [candidates, q, jobId, stageId, source, owner, starredOnly, sort, sourceMap]);
+  }, [candidates, q, jobId, stageId, source, owner, starredOnly, sort, sourceMap, appsBy, stageMap, outcome, rejectedFrom, reasonId, includeClosed]);
 
   const allSelected = rows.length > 0 && rows.every((r) => selected.includes(r.id));
   const someSelected = selected.length > 0 && !allSelected;
@@ -82,8 +105,12 @@ export default function Candidates() {
     setSource("all");
     setOwner("all");
     setStarredOnly(false);
+    setOutcome("");
+    setRejectedFrom("");
+    setReasonId("");
+    setIncludeClosed(true);
   };
-  const filtersActive = q || jobId !== "all" || stageId !== "all" || source !== "all" || owner !== "all" || starredOnly;
+  const filtersActive = q || jobId !== "all" || stageId !== "all" || source !== "all" || owner !== "all" || starredOnly || outcome || rejectedFrom || reasonId || !includeClosed;
 
   const exportCsv = () => {
     const pick = candidates.filter((c) => selected.includes(c.id));
@@ -153,6 +180,27 @@ export default function Candidates() {
         >
           <Star size={14} className={starredOnly ? "fill-amber-400 text-amber-400" : ""} /> Starred
         </button>
+        <Select
+          ariaLabel="Outcome"
+          value={outcome}
+          onChange={(v) => setOutcome(v as PoolFilter["outcome"])}
+          options={[
+            { value: "", label: "Any outcome" },
+            { value: "active", label: "In process" },
+            { value: "hired", label: "Hired" },
+            { value: "rejected", label: "Not moving forward" },
+          ]}
+        />
+        <Select
+          ariaLabel="Rejected from stage"
+          value={rejectedFrom}
+          onChange={setRejectedFrom}
+          options={[{ value: "", label: "Rejected from any stage" }, ...stages.filter((s) => s.kind !== "closed").map((s) => ({ value: s.id, label: `Rejected at ${s.name}` }))]}
+        />
+        <Select ariaLabel="Rejection reason" value={reasonId} onChange={setReasonId} options={[{ value: "", label: "Any reason" }, ...rejectionReasons.map((r) => ({ value: r.id, label: r.label }))]} />
+        <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium text-ink-2">
+          <Checkbox checked={includeClosed} onChange={setIncludeClosed} label="Include past candidates" /> Include past candidates
+        </label>
         {filtersActive && (
           <button onClick={clearFilters} className="inline-flex items-center gap-1 text-[13px] font-semibold text-muted hover:text-ink">
             <X size={14} /> Clear
@@ -168,7 +216,7 @@ export default function Candidates() {
             Clear
           </button>
           <span className="ml-auto flex flex-wrap items-center gap-2">
-            <MoveStageMenu candidateIds={selected} align="right" size="sm" onMoved={() => setSelected([])} />
+            <MoveStageMenu applicationIds={selected.map(appIdOf).filter(Boolean)} align="right" size="sm" onMoved={() => setSelected([])} />
             {canTag && (
               <SourcePicker
                 variant="button"
@@ -260,6 +308,7 @@ export default function Candidates() {
                               <p className="flex items-center gap-1 font-semibold">
                                 {fullName(c)}
                                 {c.starred && <Star size={12} className="fill-amber-400 text-amber-400" />}
+                                {(appsBy.get(c.id)?.length ?? 0) > 1 && <span className="text-[11px] font-medium text-muted">· {appsBy.get(c.id)!.length} applications</span>}
                               </p>
                               <p className="max-w-[220px] truncate text-xs text-muted">
                                 {c.currentTitle}
@@ -313,7 +362,7 @@ export default function Candidates() {
         )}
       </div>
 
-      <CandidateQuickView candidateId={openId} onClose={() => setOpenId(null)} />
+      <CandidateQuickView applicationId={openId ? appIdOf(openId) || null : null} onClose={() => setOpenId(null)} />
       <ComposeEmailModal open={emailOpen} onClose={() => setEmailOpen(false)} recipientIds={selected} />
       <UploadResumeModal open={uploadOpen} onClose={() => setUploadOpen(false)} />
     </>
