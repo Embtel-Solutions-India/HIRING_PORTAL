@@ -24,7 +24,6 @@ export function ScheduleInterviewModal({ open, onClose, candidateId, application
   const schedule = useStore((s) => s.scheduleInterview);
   const sendEmail = useStore((s) => s.sendEmail);
   const toast = useStore((s) => s.toast);
-  const currentUserId = useStore((s) => s.currentUserId);
 
   const [tab, setTab] = useState<"pick" | "link">("pick");
   const [cid, setCid] = useState(candidateId ?? "");
@@ -45,7 +44,8 @@ export function ScheduleInterviewModal({ open, onClose, candidateId, application
     setCid(candidateId ?? "");
     setSlot(null);
     setTab("pick");
-    setInterviewerIds(currentUserId ? [currentUserId] : []);
+    // No default: the scheduler is always invited to the event anyway, so they pick the real interviewers.
+    setInterviewerIds([]);
     let d = startOfDay(addDays(new Date(), 1));
     while (isWeekend(d)) d = addDays(d, 1);
     setDay(d);
