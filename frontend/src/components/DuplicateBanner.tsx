@@ -14,7 +14,7 @@ export function DuplicateBanner({ candidate, className }: { candidate: Candidate
   const toast = useStore((s) => s.toast);
   const navigate = useNavigate();
   const canEdit = useCan("candidates.edit");
-  const canMerge = useCan("candidates.moveStage");
+  const canMerge = useCan("candidates.edit");
   if (!other) return null;
   return (
     <div className={cn("flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] text-amber-900", className)}>

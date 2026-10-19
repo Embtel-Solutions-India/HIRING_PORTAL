@@ -1,7 +1,7 @@
 /** The sync worker: runs queued transfers one at a time, then polls Drive for changes. */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { newestOpenApplication } from "./applications.ts";
+import { driveFolderJob } from "./applications.ts";
 import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
 import { flagConflict, pollDriveChanges, portalPending } from "./drive-changes.ts";
@@ -74,11 +74,11 @@ async function toS3(job: JobRow, row: ResumeFileRow) {
   if (followUpRename) await enqueue(row.id, "rename_s3", { name: followUpRename });
 }
 
-/** Where a person's resume lives in Drive: the job/source folder of their newest open application. */
+/** Where a person's resume lives in Drive: the job/source folder of their newest open application (or newest at all). */
 async function folderForRow(row: ResumeFileRow): Promise<string> {
   const c = row.candidate_id ? await prisma.candidates.findUnique({ where: { id: row.candidate_id }, select: { sources: { select: { name: true } } } }) : null;
-  const app = row.candidate_id ? await newestOpenApplication(row.candidate_id) : null;
-  return (await driveFolderFor(app?.jobId ?? null, c?.sources?.name)) ?? (await google.ensureRootFolder());
+  const jobId = row.candidate_id ? await driveFolderJob(row.candidate_id) : null;
+  return (await driveFolderFor(jobId, c?.sources?.name)) ?? (await google.ensureRootFolder());
 }
 
 /** Creates a Drive file with a pre-generated id stored in the job, so a retry after a crash can't make a second file. */
@@ -150,14 +150,19 @@ async function toDrive(job: JobRow, row: ResumeFileRow) {
 
 /** The person got a newer application: their one Drive file moves to that job's folder. */
 async function moveDrive(job: JobRow, row: ResumeFileRow) {
+  if (frozen(row, job)) return complete(job.id, prisma, "skipped: needs review");
   if (!row.drive_file_id) return complete(job.id, prisma, "skipped: no Drive file yet (to_drive will use the right folder)");
   if (!(await google.isConnected())) throw new Error("Google Drive isn't connected");
   const folder = await folderForRow(row);
   const meta = await google.getFileMeta(row.drive_file_id);
-  if (!(meta.parents ?? []).includes(folder)) await google.moveFile(row.drive_file_id, folder);
-  // A move bumps the Drive version; record it so the change feed doesn't take it for an edit.
-  const after = await google.getFileMeta(row.drive_file_id);
-  await prisma.resume_files.update({ where: { id: row.id }, data: { drive_version: after.version ?? null, updated_at: new Date() } });
+  if ((meta.parents ?? []).includes(folder)) return complete(job.id, prisma, "skipped: already in place");
+  await google.moveFile(row.drive_file_id, folder);
+  // A move bumps the Drive version. Record it so the change feed doesn't take the move for an edit, but only if the
+  // file was unchanged since our last sync; otherwise a Drive edit (Google Docs are detected by version) would be lost.
+  if (meta.version === row.drive_version) {
+    const after = await google.getFileMeta(row.drive_file_id);
+    await prisma.resume_files.updateMany({ where: { id: row.id, drive_version: row.drive_version }, data: { drive_version: after.version ?? null, updated_at: new Date() } });
+  }
   return complete(job.id, prisma);
 }
 

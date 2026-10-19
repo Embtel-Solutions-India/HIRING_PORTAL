@@ -1,7 +1,7 @@
 // Run against a local database: DATABASE_URL=postgres://postgres:postgres@localhost:5433/hirely npm run check:applications-db
 // Database-level checks of applications, stage history, rejection reasons, reapply and merge.
 import assert from "node:assert/strict";
-import { addNote, createApplication, findDuplicate, keepSeparate, mergeCandidate, moveApplications, saveRejectionReasons, updateApplication } from "../src/applications.ts";
+import { addNote, createApplication, driveFolderJob, findDuplicate, keepSeparate, mergeCandidate, moveApplications, saveRejectionReasons, updateApplication } from "../src/applications.ts";
 import { prisma } from "../src/db.ts";
 import { createCandidate } from "../src/pipeline.ts";
 import { runJob } from "../src/sync-jobs.ts";
@@ -21,6 +21,9 @@ await prisma.candidates.deleteMany({ where: { first_name: "CHK" } });
   const [unlinked] = await prisma.$queryRaw<{ n: number }[]>`select count(*)::int n from interviews where application_id is null`;
   assert.equal(unlinked!.n, 0, "B1: interviews linked");
   assert.ok((await prisma.rejection_reasons.count()) >= 7, "B1: reasons seeded");
+  // Emails queued before the split must still know their application, or {{job_title}} renders blank.
+  const [orphanEmails] = await prisma.$queryRaw<{ n: number }[]>`select count(*)::int n from email_messages m join applications a on a.id = m.candidate_id where m.application_id is null`;
+  assert.equal(orphanEmails!.n, 0, "B1: pre-split emails linked to their application");
   console.log("B1 ok");
 }
 
@@ -189,6 +192,30 @@ assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: appId }
   await prisma.candidates.deleteMany({ where: { id: target.id } });
   await prisma.jobs.deleteMany({ where: { id: { in: [j1.id, j2.id] } } });
   console.log("M1 ok");
+}
+
+// F2: a person with only closed applications keeps their Drive file in their latest job's folder (not the root)
+{
+  const j = await prisma.jobs.create({ data: { title: "CHK Closed Job" } });
+  const p2 = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "Closed" } });
+  const a = await createApplication({ candidateId: p2.id, jobId: j.id, actorId: null });
+  assert.equal(await driveFolderJob(p2.id), j.id, "F2: open application's job");
+  await moveApplications({ ids: [a], stageId: closed, actorId: null, reasonId: "skills" });
+  assert.equal(await driveFolderJob(p2.id), j.id, "F2: still that job once it's closed");
+  await prisma.candidates.delete({ where: { id: p2.id } });
+  await prisma.jobs.delete({ where: { id: j.id } });
+  console.log("F2 ok");
+}
+
+// F4: move_drive leaves a resume that's pending deletion alone (no Drive call, no failure)
+{
+  await prisma.sync_jobs.deleteMany({ where: { status: { in: ["queued", "running"] } } });
+  const rf = await prisma.resume_files.create({ data: { candidate_id: personId, file_name: "cv.pdf", mime_type: "application/pdf", state: "pending_deletion", drive_file_id: `CHK-${Math.random()}` } });
+  await enqueue(rf.id, "move_drive");
+  await runJob((await claimNext())!);
+  assert.equal((await prisma.sync_jobs.findFirstOrThrow({ where: { resume_file_id: rf.id, kind: "move_drive" } })).status, "done", "F4: skipped, not failed");
+  await prisma.resume_files.delete({ where: { id: rf.id } });
+  console.log("F4 ok");
 }
 
 // S1: createCandidate makes the person plus one open application with an entry transition

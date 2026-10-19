@@ -69,8 +69,9 @@ export default async function candidateRoutes(app: FastifyInstance) {
   });
 
   /** The flagged look-alike is the same person: fold this record into it. */
+  // Merging deletes a record and replaces a resume, so it needs the same rights as editing candidates (Admin and up).
   app.post("/api/candidates/:id/merge-into/:targetId", async (req) => {
-    const user = requirePerm(req, "candidates.moveStage");
+    const user = requirePerm(req, "candidates.edit");
     const { id, targetId } = req.params as { id: string; targetId: string };
     if (!isUuid(id) || !isUuid(targetId)) throw new HttpError(404, "Not found");
     await assertCandidateAccess(user, id);

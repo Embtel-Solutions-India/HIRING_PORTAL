@@ -65,10 +65,18 @@ export async function latestApplicationIds(candidateIds: string[]): Promise<Map<
   return new Map(rows.map((r) => [r.candidate_id, r.id]));
 }
 
-/** The person's most recently created open application (decides which job folder their Drive file lives in). */
+/** The person's most recently created open application. */
 export async function newestOpenApplication(candidateId: string): Promise<{ id: string; jobId: string | null } | null> {
   const a = await prisma.applications.findFirst({ where: { candidate_id: candidateId, stages: { kind: "active" } }, orderBy: { created_at: "desc" }, select: { id: true, job_id: true } });
   return a ? { id: a.id, jobId: a.job_id } : null;
+}
+
+/** The job whose Drive folder holds the person's resume: their newest open application, else their newest one of any stage. */
+export async function driveFolderJob(candidateId: string): Promise<string | null> {
+  const open = await newestOpenApplication(candidateId);
+  if (open) return open.jobId;
+  const any = await prisma.applications.findFirst({ where: { candidate_id: candidateId }, orderBy: { created_at: "desc" }, select: { job_id: true } });
+  return any?.job_id ?? null;
 }
 
 const slug = (label: string) => label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 48) || "reason";

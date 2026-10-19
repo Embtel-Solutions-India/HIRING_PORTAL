@@ -26,7 +26,6 @@ export default function Pipeline() {
   const jobs = useStore((s) => s.jobs);
   const team = useStore((s) => s.team);
   const interviews = useStore((s) => s.interviews);
-  const moveStage = useStore((s) => s.moveStage);
   const requestMove = useStore((s) => s.requestMove);
   const toast = useStore((s) => s.toast);
   const canMove = useCan("candidates.moveStage");
@@ -95,7 +94,7 @@ export default function Pipeline() {
     if (!(await requestMove([id], to, { notify: notify && canEmail }))) return;
     toast(`${fullName(card.candidate)} → ${stage.name}${notify && canEmail && stage.autoEmailTemplateId ? " · email sent" : ""}`, "success", {
       label: "Undo",
-      onClick: () => moveStage([id], from),
+      onClick: () => requestMove([id], from),
     });
   };
 

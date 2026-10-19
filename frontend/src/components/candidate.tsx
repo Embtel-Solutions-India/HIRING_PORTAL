@@ -311,7 +311,6 @@ export function MoveStageMenu({
   onMoved?: (stageId: string) => void;
 }) {
   const stages = useStore((s) => s.stages);
-  const moveStage = useStore((s) => s.moveStage);
   const requestMove = useStore((s) => s.requestMove);
   const toast = useStore((s) => s.toast);
   const allowed = useCan("candidates.moveStage");
@@ -340,7 +339,7 @@ export function MoveStageMenu({
                 toast(
                   `${applicationIds.length > 1 ? `${applicationIds.length} candidates` : "Candidate"} moved to ${st.name}${notify && canEmail && st.autoEmailTemplateId ? " · email sent" : ""}`,
                   "success",
-                  prev && applicationIds.length === 1 ? { label: "Undo", onClick: () => moveStage(applicationIds, prev) } : undefined,
+                  prev && applicationIds.length === 1 ? { label: "Undo", onClick: () => requestMove(applicationIds, prev) } : undefined,
                 );
                 onMoved?.(st.id);
               }}

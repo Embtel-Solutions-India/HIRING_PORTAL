@@ -35,7 +35,6 @@ export default function Review() {
   const stages = useStore((s) => s.stages);
   const jobs = useStore((s) => s.jobs);
   const interviews = useStore((s) => s.interviews);
-  const moveStage = useStore((s) => s.moveStage);
   const requestMove = useStore((s) => s.requestMove);
   const toggleStar = useStore((s) => s.toggleStar);
   const setRating = useStore((s) => s.setRating);
@@ -147,11 +146,14 @@ export default function Review() {
     toast(`${name} → ${target.name}`, "success", {
       label: "Undo",
       onClick: () => {
-        void moveStage([id], from);
-        setDecisions((d) => {
-          const { [id]: _, ...rest } = d;
-          return rest;
-        });
+        void requestMove([id], from).then(
+          (undone) =>
+            undone &&
+            setDecisions((d) => {
+              const { [id]: _, ...rest } = d;
+              return rest;
+            }),
+        );
       },
     });
     go(1);

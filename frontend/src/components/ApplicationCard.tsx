@@ -21,7 +21,6 @@ export function ApplicationCard({
   onSelect: () => void;
 }) {
   const stages = useStore((s) => s.stages);
-  const moveStage = useStore((s) => s.moveStage);
   const requestMove = useStore((s) => s.requestMove);
   const toast = useStore((s) => s.toast);
   const stageMap = useStageMap();
@@ -67,7 +66,7 @@ export function ApplicationCard({
                     disabled={!canMove || isCurrent}
                     onClick={async () => {
                       const from = app.stageId;
-                      if (await requestMove([app.id], s.id)) toast(`Moved to ${s.name}`, "success", { label: "Undo", onClick: () => moveStage([app.id], from) });
+                      if (await requestMove([app.id], s.id)) toast(`Moved to ${s.name}`, "success", { label: "Undo", onClick: () => requestMove([app.id], from) });
                     }}
                     className="group w-full text-left disabled:cursor-default"
                     title={isCurrent ? "Current stage" : `Move to ${s.name}`}

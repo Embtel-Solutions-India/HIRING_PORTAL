@@ -26,7 +26,6 @@ export default function CandidateDetail() {
   const addNote = useStore((s) => s.addNote);
   const setRating = useStore((s) => s.setRating);
   const toggleStar = useStore((s) => s.toggleStar);
-  const moveStage = useStore((s) => s.moveStage);
   const requestMove = useStore((s) => s.requestMove);
   const deleteCandidates = useStore((s) => s.deleteCandidates);
   const settings = useStore((s) => s.settings);
@@ -148,7 +147,7 @@ export default function CandidateDetail() {
               <Button
                 className="text-danger"
                 icon={<XCircle size={15} />}
-                onClick={async () => (await requestMove([app.id], closedStage.id)) && toast(`Marked “${closedStage.name}”`, "info", { label: "Undo", onClick: () => moveStage([app.id], app.stageId) })}
+                onClick={async () => (await requestMove([app.id], closedStage.id)) && toast(`Marked “${closedStage.name}”`, "info", { label: "Undo", onClick: () => requestMove([app.id], app.stageId) })}
               >
                 Reject
               </Button>
