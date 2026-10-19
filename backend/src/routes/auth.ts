@@ -23,6 +23,11 @@ function setState(reply: FastifyReply, payload: object) {
   return state;
 }
 
+/** Only the owner account may change the Google connection, so nobody swaps the shared Drive out from under everyone. */
+function requireGoogleOwner(user: UserRow) {
+  if (user.email.toLowerCase() !== config.google.ownerEmail) throw new HttpError(403, `Only ${config.google.ownerEmail} can connect or disconnect Google.`);
+}
+
 function readState(req: FastifyRequest, reply: FastifyReply, state: string) {
   const raw = req.cookies[STATE_COOKIE];
   reply.clearCookie(STATE_COOKIE, { path: "/api" });
@@ -115,6 +120,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
   app.get("/api/integrations/google/start", async (req, reply) => {
     const user = requirePerm(req, "settings.integrations");
+    requireGoogleOwner(user);
     const state = setState(reply, { returnTo: "/settings" });
     return reply.redirect(
       google.authUrl({ scopes: google.INTEGRATION_SCOPES, redirectUri: google.integrationRedirectUri(), state, offline: true, loginHint: user.email }),
@@ -123,6 +129,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
   app.get("/api/integrations/google/callback", async (req, reply) => {
     const user = requirePerm(req, "settings.integrations");
+    requireGoogleOwner(user);
     const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
     if (error || !code || !state) return reply.redirect(`/settings?google=${encodeURIComponent(error ?? "cancelled")}`);
     readState(req, reply, state);
@@ -131,6 +138,11 @@ export default async function authRoutes(app: FastifyInstance) {
     const missing = google.INTEGRATION_SCOPES.filter((sc) => sc.startsWith("https://") && !(token.scope ?? "").includes(sc));
     if (missing.length) return reply.redirect("/settings?google=missing_scopes");
     const info = await google.userInfo(token.access_token);
+    // The Google account picked on the consent screen must be the owner too, not just the signed-in user.
+    if (info.email.toLowerCase() !== config.google.ownerEmail) {
+      await google.revokeToken(token.refresh_token);
+      return reply.redirect("/settings?google=wrong_account");
+    }
     google.clearTokenCache();
     await patchSetting("google", { connected: true, account: info.email, refreshTokenEnc: encrypt(token.refresh_token), scopes: token.scope, driveRootFolderId: undefined });
     // Folder ids belong to the previously connected account; they're recreated on demand.
@@ -146,6 +158,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
   app.post("/api/integrations/google/disconnect", async (req) => {
     const user = requirePerm(req, "settings.integrations");
+    requireGoogleOwner(user);
     const g = await getSetting("google");
     if (g.refreshTokenEnc) await google.revokeToken(decrypt(g.refreshTokenEnc));
     google.clearTokenCache();

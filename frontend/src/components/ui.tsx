@@ -546,14 +546,6 @@ export function EmptyState({ icon, title, body, action }: { icon: ReactNode; tit
   );
 }
 
-export function Locked({ children, reason = "Your role can't do this" }: { children: ReactNode; reason?: string }) {
-  return (
-    <span title={reason} className="cursor-not-allowed opacity-50 [&>*]:pointer-events-none">
-      {children}
-    </span>
-  );
-}
-
 /* ---------------- Toasts ---------------- */
 
 export function Toaster() {

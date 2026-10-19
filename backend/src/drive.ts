@@ -26,6 +26,39 @@ export function syncDrive(): Promise<{ found: number; imported: number }> {
 
 const norm = (s: string) => s.trim().toLowerCase();
 
+/**
+ * Root folder renamed in Settings: moves everything under the old root (job folders, loose resumes, _archive)
+ * into the new one and returns the new root's id. Moved folders keep their ids, so jobs stay linked;
+ * a folder that already exists by name in the new root is merged into it instead.
+ */
+export async function moveRootFolder(oldPath: string, oldId: string, newPath: string): Promise<string> {
+  const newId = await google.ensureFolderPath(newPath);
+  if (newId === oldId) return newId;
+  const parts = (p: string) => p.split("/").map((s) => s.trim()).filter(Boolean);
+  const [from, to] = [parts(oldPath), parts(newPath)];
+  // New root inside the old one (ATS/Resumes → ATS/Resumes/2026): don't move the folder that holds it into itself.
+  const holdsNewRoot = to.length > from.length && from.every((s, i) => to[i] === s) ? to[from.length] : undefined;
+  await moveContents(oldId, newId, holdsNewRoot);
+  await prisma.$executeRaw`update jobs set drive_folder = ${newPath} || substr(drive_folder, ${oldPath.length + 1})
+    where drive_folder_id is not null and starts_with(drive_folder, ${oldPath + "/"})`;
+  return newId;
+}
+
+async function moveContents(fromId: string, toId: string, skipName?: string) {
+  const existing = new Map((await google.listSubfolders(toId)).map((f) => [f.name, f.id]));
+  for (const f of await google.listFolder(fromId)) {
+    if (f.name === skipName) continue;
+    const target = f.mimeType === google.FOLDER ? existing.get(f.name) : undefined;
+    if (!target) {
+      await google.moveFile(f.id, toId);
+      continue;
+    }
+    await moveContents(f.id, target);
+    await prisma.jobs.updateMany({ where: { drive_folder_id: f.id }, data: { drive_folder_id: target } });
+    await prisma.drive_files.updateMany({ where: { folder_id: f.id }, data: { folder_id: target } });
+  }
+}
+
 interface ScanFolder {
   id: string;
   name: string;

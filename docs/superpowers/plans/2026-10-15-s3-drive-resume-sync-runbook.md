@@ -3,7 +3,7 @@
 Run against a **test** bucket (Versioning on) and a **test** Drive folder, never production. Set `DRIVE_SYNC_MINUTES=1`
 while testing. Mark each scenario pass/fail with the date.
 
-Plan: `docs/superpowers/plans/2026-10-15-s3-drive-resume-sync.md` · Spec: `docs/superpowers/specs/2026-10-15-s3-drive-resume-sync-design.md`
+Spec: `docs/superpowers/specs/2026-10-15-s3-drive-resume-sync-design.md`
 
 Also still to run from the plan (they need S3 + Drive): Task 5 Step 6, Task 6 Step 5, Task 7 Step 4, Task 8 Step 4, Task 9 Step 8.
 

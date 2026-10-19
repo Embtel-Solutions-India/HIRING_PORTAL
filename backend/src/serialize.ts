@@ -178,6 +178,7 @@ export async function orgSettings(): Promise<OrgSettings> {
       emailTransport: config.email.transport,
       smtpHost: config.email.smtp.host,
       googleOAuthConfigured: !!(config.google.clientId && config.google.clientSecret),
+      googleOwnerEmail: config.google.ownerEmail,
       timezone: config.orgTimezone,
       s3Configured: s3Configured(),
       resumeGraceDays: config.resumeDeleteGraceDays,

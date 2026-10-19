@@ -113,7 +113,7 @@ async function gfetch(url: string, init: RequestInit = {}): Promise<Response> {
 // ---------- Drive ----------
 
 const DRIVE = "https://www.googleapis.com/drive/v3";
-const FOLDER = "application/vnd.google-apps.folder";
+export const FOLDER = "application/vnd.google-apps.folder";
 export const GOOGLE_DOC = "application/vnd.google-apps.document";
 export const RESUME_MIME = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword", GOOGLE_DOC];
 

@@ -99,6 +99,7 @@ interface Actions {
   deleteTemplate: (id: string) => Promise<boolean>;
 
   upsertJob: (job: Job & { description?: string }) => Promise<boolean>;
+  deleteJob: (id: string) => Promise<boolean>;
 
   /** null if the invite wasn't saved; `emailError` if it was saved but the email didn't go out. */
   inviteUser: (input: { name: string; email: string; role: Role; title: string }) => Promise<{ emailError?: string } | null>;
@@ -324,6 +325,8 @@ export const useStore = create<Store>()((set, get) => {
     },
 
     // ---------- admin ----------
+
+    deleteJob: (id) => ok("Couldn't delete job", () => api.del(`/api/jobs/${id}`)),
 
     upsertJob: (job) =>
       ok("Couldn't save job", () =>

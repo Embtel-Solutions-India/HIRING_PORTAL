@@ -1,15 +1,10 @@
-import { addDays, addMinutes, setHours, setMinutes, startOfDay, subDays, subHours } from "date-fns";
+import { addDays, setHours, setMinutes, startOfDay, subDays, subHours } from "date-fns";
 import type {
-  ActivityEvent,
   BookingLink,
   Candidate,
-  EmailCampaign,
-  EmailTemplate,
   Experience,
   Interview,
   Job,
-  OrgSettings,
-  Stage,
   TeamMember,
 } from "../types";
 
@@ -29,18 +24,6 @@ const pickN = <T,>(arr: readonly T[], n: number) => [...arr].sort(() => rand() -
 const between = (min: number, max: number) => Math.floor(rand() * (max - min + 1)) + min;
 const iso = (d: Date) => d.toISOString();
 const driveId = () => "1" + Array.from({ length: 32 }, () => "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"[between(0, 63)]).join("");
-
-export const SEED_VERSION = 5;
-
-export const seedStages: Stage[] = [
-  { id: "screening", name: "Screening", color: "#2a78d6", kind: "active", autoEmailTemplateId: "t_received" },
-  { id: "shortlisted", name: "Shortlisted", color: "#eb6834", kind: "active", autoEmailTemplateId: "t_shortlisted" },
-  { id: "interview", name: "Interview", color: "#1baf7a", kind: "active", autoEmailTemplateId: "t_interview" },
-  { id: "final", name: "Final Interview", color: "#eda100", kind: "active", autoEmailTemplateId: "t_final" },
-  { id: "offer", name: "Offer", color: "#4a3aa7", kind: "active", autoEmailTemplateId: "t_offer" },
-  { id: "onboarding", name: "Onboarding", color: "#008300", kind: "hired", autoEmailTemplateId: "t_welcome" },
-  { id: "rejected", name: "Not moving forward", color: "#e34948", kind: "closed", autoEmailTemplateId: "t_rejection" },
-];
 
 const AVATAR_COLORS = ["#1d5a3a", "#9a3412", "#1e40af", "#7c2d12", "#6d28d9", "#0f766e", "#be185d", "#4d7c0f", "#a16207"];
 
@@ -332,73 +315,3 @@ export const seedBookingLinks: BookingLink[] = [
   { id: "bl_tech", slug: "technical-interview", title: "Technical interview (video)", durationMin: 60, type: "video", hostIds: ["u_marcus"], days: [2, 4], startHour: 10, endHour: 16, bufferMin: 15, active: true, bookings: 7 },
   { id: "bl_final", slug: "final-round", title: "Final round with leadership", durationMin: 45, type: "video", hostIds: ["u_priya", "u_sofia"], days: [3, 5], startHour: 13, endHour: 17, bufferMin: 30, active: false, bookings: 4 },
 ];
-
-export const seedTemplates: EmailTemplate[] = [
-  { id: "t_received", name: "Application received", category: "stage_update", subject: "We received your application for {{job_title}}", body: "Hi {{first_name}},\n\nThank you for applying for the {{job_title}} role at {{company}}. Our team is reviewing your resume and we'll be in touch within 5 business days.\n\nBest,\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 20)) },
-  { id: "t_shortlisted", name: "You've been shortlisted", category: "stage_update", subject: "Next steps for {{job_title}} at {{company}}", body: "Hi {{first_name}},\n\nGood news — we'd love to learn more about you for the {{job_title}} role. Please pick a time for a short intro call here:\n{{booking_link}}\n\nLooking forward to it,\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 12)) },
-  { id: "t_interview", name: "Interview invitation", category: "interview", subject: "Interview invitation · {{job_title}}", body: "Hi {{first_name}},\n\nWe'd like to invite you to interview for {{job_title}}. Choose a slot that works for you:\n{{booking_link}}\n\nYou'll receive a Google Calendar invite with the meeting link once booked.\n\nThanks,\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 8)) },
-  { id: "t_final", name: "Final interview", category: "interview", subject: "Final round for {{job_title}}", body: "Hi {{first_name}},\n\nThank you for your time so far. We'd like to invite you to a final interview with our leadership team. Please book a time here: {{booking_link}}\n\nBest,\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 8)) },
-  { id: "t_offer", name: "Offer coming your way", category: "offer", subject: "An offer from {{company}}", body: "Hi {{first_name}},\n\nWe're thrilled to let you know we'll be extending an offer for the {{job_title}} position. Your formal offer letter will follow shortly from our People team.\n\nCongratulations!\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 30)) },
-  { id: "t_welcome", name: "Welcome & onboarding", category: "stage_update", subject: "Welcome to {{company}}, {{first_name}}!", body: "Hi {{first_name}},\n\nWelcome aboard! Over the next few days you'll receive your onboarding checklist, equipment details and first-week schedule.\n\nWe're excited to have you,\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 30)) },
-  { id: "t_rejection", name: "Not moving forward", category: "rejection", subject: "Your application for {{job_title}}", body: "Hi {{first_name}},\n\nThank you for your interest in {{company}} and for the time you invested in the process. After careful consideration, we've decided not to move forward at this time.\n\nWe'll keep your resume on file and reach out if a better fit opens up.\n\nWarm regards,\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 40)) },
-  { id: "t_checkin", name: "Status check-in", category: "general", subject: "An update on your application", body: "Hi {{first_name}},\n\nA quick update: your application for {{job_title}} is currently in the {{stage}} stage. We appreciate your patience and will share next steps soon.\n\nBest,\n{{sender_name}}", updatedAt: iso(subDays(new Date(), 4)) },
-];
-
-export const seedCampaigns: EmailCampaign[] = [
-  { id: "ec_1", subject: "An update on your application", templateId: "t_checkin", fromAddress: "careers@yourcompany.com", recipientIds: seedCandidates.filter((c) => c.stageId === "screening").map((c) => c.id), sentById: "u_marcus", sentAt: iso(subDays(new Date(), 2)), status: "sent", stats: { delivered: 12, opened: 9, clicked: 3, bounced: 1 } },
-  { id: "ec_2", subject: "Interview invitation · Case Manager", templateId: "t_interview", fromAddress: "careers@yourcompany.com", recipientIds: seedCandidates.filter((c) => c.jobId === "j_case").slice(0, 6).map((c) => c.id), sentById: "u_sofia", sentAt: iso(subDays(new Date(), 5)), status: "sent", stats: { delivered: 6, opened: 6, clicked: 5, bounced: 0 } },
-  { id: "ec_3", subject: "Your application for Operations Coordinator", templateId: "t_rejection", fromAddress: "careers@yourcompany.com", recipientIds: seedCandidates.filter((c) => c.stageId === "rejected").map((c) => c.id), sentById: "u_priya", sentAt: iso(subDays(new Date(), 9)), status: "sent", stats: { delivered: 5, opened: 4, clicked: 0, bounced: 0 } },
-  { id: "ec_4", subject: "Hiring event: Meet the team (Oct 15)", fromAddress: "careers@yourcompany.com", recipientIds: seedCandidates.filter((c) => ["shortlisted", "interview"].includes(c.stageId)).map((c) => c.id), sentById: "u_marcus", sentAt: iso(addDays(new Date(), 3)), status: "scheduled", stats: { delivered: 0, opened: 0, clicked: 0, bounced: 0 } },
-];
-
-export const seedActivity: ActivityEvent[] = (() => {
-  const events: ActivityEvent[] = [];
-  seedCandidates.slice(0, 24).forEach((c, i) => {
-    const stage = seedStages.find((s) => s.id === c.stageId)!;
-    events.push({ id: `a_s${i}`, actorId: c.ownerId, type: "stage_change", candidateId: c.id, message: `moved ${c.firstName} ${c.lastName} to ${stage.name}`, createdAt: c.stageEnteredAt });
-    if (i % 2 === 0)
-      events.push({ id: `a_r${i}`, actorId: c.resume.uploadedById, type: "resume_upload", candidateId: c.id, message: `imported ${c.resume.fileName} from Google Drive`, createdAt: c.appliedAt });
-  });
-  seedInterviews.slice(0, 8).forEach((iv, i) => {
-    const c = seedCandidates.find((x) => x.id === iv.candidateId)!;
-    events.push({ id: `a_i${i}`, actorId: iv.interviewerIds[0]!, type: "interview_scheduled", candidateId: c.id, message: `scheduled ${iv.title.toLowerCase()} with ${c.firstName} ${c.lastName}`, createdAt: iso(addMinutes(new Date(iv.start), -60 * 24 * 3)) });
-  });
-  events.push({ id: "a_u1", actorId: "u_priya", type: "user_invited", message: "invited tom@yourcompany.com as Recruiter", createdAt: iso(subDays(new Date(), 1)) });
-  events.push({ id: "a_u2", actorId: "u_priya", type: "role_changed", message: "changed Sofia Alvarez's role to Admin", createdAt: iso(subDays(new Date(), 6)) });
-  events.push({ id: "a_e1", actorId: "u_marcus", type: "email_sent", message: "sent “An update on your application” to 13 candidates", createdAt: iso(subDays(new Date(), 2)) });
-  events.push({ id: "a_x1", actorId: "u_priya", type: "settings_changed", message: "enabled automatic Drive sync for ATS/Resumes", createdAt: iso(subDays(new Date(), 12)) });
-  return events.filter((e) => new Date(e.createdAt) <= new Date()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-})();
-
-export const seedSettings: OrgSettings = {
-  orgName: "Your Company",
-  emailDomain: "yourcompany.com",
-  senderName: "Talent Team",
-  senderAddress: "careers@yourcompany.com",
-  replyTo: "recruiting@yourcompany.com",
-  emailSignature: "Talent Team\nYour Company · hire.yourcompany.com",
-  dnsRecords: [
-    { type: "SPF", host: "@", value: "v=spf1 include:_spf.google.com include:sendgrid.net ~all", verified: true },
-    { type: "DKIM", host: "s1._domainkey", value: "s1.domainkey.u1234.wl.sendgrid.net", verified: true },
-    { type: "DMARC", host: "_dmarc", value: "v=DMARC1; p=quarantine; rua=mailto:dmarc@yourcompany.com", verified: false },
-  ],
-  google: {
-    connected: true,
-    account: "workspace-admin@yourcompany.com",
-    driveRootFolder: "ATS/Resumes",
-    driveSyncEnabled: true,
-    lastSyncAt: iso(subHours(new Date(), 0.3)),
-    calendarId: "hiring@yourcompany.com",
-    autoMeetLinks: true,
-  },
-  aiSummariesEnabled: true,
-};
-
-/** Unfiled resumes sitting in the watched Drive folder, waiting to be imported. */
-export const seedDriveInbox = [
-  { driveFileId: driveId(), fileName: "Rohan_Desai_CV.pdf", folder: "ATS/Resumes/Case Manager", sizeKb: 212, modifiedAt: iso(subHours(new Date(), 2)) },
-  { driveFileId: driveId(), fileName: "Emily Zhang - Resume 2026.pdf", folder: "ATS/Resumes/Full-Stack Developer", sizeKb: 188, modifiedAt: iso(subHours(new Date(), 5)) },
-  { driveFileId: driveId(), fileName: "M.Okonkwo_Paralegal.docx", folder: "ATS/Resumes/Paralegal", sizeKb: 96, modifiedAt: iso(subHours(new Date(), 26)) },
-];
-
-export type DriveInboxFile = (typeof seedDriveInbox)[number];

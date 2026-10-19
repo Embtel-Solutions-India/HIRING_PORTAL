@@ -221,6 +221,7 @@ export interface OrgSettings {
     emailTransport: "smtp" | "log";
     smtpHost: string;
     googleOAuthConfigured: boolean;
+    googleOwnerEmail?: string;
     timezone: string;
     s3Configured?: boolean;
     resumeGraceDays?: number;

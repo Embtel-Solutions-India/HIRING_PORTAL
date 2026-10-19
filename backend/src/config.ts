@@ -42,6 +42,8 @@ export const config = {
   google: {
     clientId: str("GOOGLE_CLIENT_ID"),
     clientSecret: str("GOOGLE_CLIENT_SECRET"),
+    /** The only account allowed to connect, reconnect or disconnect Google (Drive + Calendar). */
+    ownerEmail: (str("GOOGLE_OWNER_EMAIL") || "admin@embtelsolutions.com").toLowerCase(),
   },
 
   email: {

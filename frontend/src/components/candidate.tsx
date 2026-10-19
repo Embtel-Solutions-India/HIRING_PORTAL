@@ -2,10 +2,10 @@ import { ArrowRight, Download, ExternalLink, FileText, Loader2, Mail, MapPin, Ph
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DocxViewer } from "./DocxViewer";
 import { PdfViewer } from "./PdfViewer";
-import { useCan, useJobMap, useStageMap, useStore } from "../data/store";
+import { useCan, useStore } from "../data/store";
 import type { Candidate } from "../types";
 import { cn, fmtDate, fullName } from "../lib/utils";
-import { Badge, Button, Checkbox, DriveMark, MatchScore, Menu, MenuItem, StageBadge } from "./ui";
+import { Badge, Button, Checkbox, DriveMark, MatchScore, Menu, MenuItem } from "./ui";
 
 export const resumeUrl = (candidateId: string, kind: "preview" | "download", version?: string) =>
   `/api/candidates/${candidateId}/resume/${kind}${version ? `?v=${encodeURIComponent(version)}` : ""}`;
@@ -356,19 +356,5 @@ export function MoveStageMenu({
         </>
       )}
     </Menu>
-  );
-}
-
-export function CandidateLine({ candidate, showStage = true }: { candidate: Candidate; showStage?: boolean }) {
-  const jobMap = useJobMap();
-  const stageMap = useStageMap();
-  return (
-    <span className="flex min-w-0 items-center gap-2">
-      <span className="min-w-0">
-        <span className="block truncate text-sm font-semibold">{fullName(candidate)}</span>
-        <span className="block truncate text-xs text-muted">{jobMap[candidate.jobId]?.title}</span>
-      </span>
-      {showStage && <StageBadge stage={stageMap[candidate.stageId]} className="ml-auto" />}
-    </span>
   );
 }

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Avatar, Badge, Button, CalendarMark, DriveMark, Field, GoogleMark, PageHeader, Select, Tabs, Toggle } from "../components/ui";
 import { SOURCE_COLORS } from "../components/SourcePicker";
-import { useCan, useStore, useTeamMap } from "../data/store";
+import { useCan, useCurrentUser, useStore, useTeamMap } from "../data/store";
 import type { ActivityEvent, Stage } from "../types";
 import ResumeSync from "./ResumeSync";
 import { cn, fmtDate, timeAgo, uid } from "../lib/utils";
@@ -11,6 +11,7 @@ import { cn, fmtDate, timeAgo, uid } from "../lib/utils";
 const GOOGLE_RESULT: Record<string, [string, "success" | "error"]> = {
   connected: ["Google Workspace connected — Drive and Calendar are ready", "success"],
   no_refresh_token: ["Google didn't grant offline access. Disconnect the app at myaccount.google.com/permissions and try again.", "error"],
+  wrong_account: ["Pick the Google account that owns the shared Drive on Google's screen and try again.", "error"],
   missing_scopes: ["Please tick both Drive and Calendar on Google's consent screen and try again.", "error"],
   access_denied: ["Google connection was cancelled", "error"],
 };
@@ -108,6 +109,8 @@ function Integrations() {
   const [syncing, setSyncing] = useState(false);
   const g = settings.google;
   const sys = settings.system;
+  const me = useCurrentUser();
+  const isOwner = !!sys?.googleOwnerEmail && me?.email.toLowerCase() === sys.googleOwnerEmail;
   const [folder, setFolder] = useState(g.driveRootFolder);
   const [calendarId, setCalendarId] = useState(g.calendarId);
   useEffect(() => setFolder(g.driveRootFolder), [g.driveRootFolder]);
@@ -144,8 +147,11 @@ function Integrations() {
             ))}
           </span>
         </Row>
+        {!isOwner && sys?.googleOwnerEmail && (
+          <p className="text-[13px] text-muted">Only {sys.googleOwnerEmail} can connect or disconnect Google.</p>
+        )}
         <div className="flex justify-end gap-2">
-          {g.connected && (
+          {g.connected && isOwner && (
             <Button
               variant="ghost"
               className="text-danger"
@@ -157,14 +163,14 @@ function Integrations() {
               Disconnect
             </Button>
           )}
-          <Button variant={g.connected ? "secondary" : "primary"} disabled={!sys?.googleOAuthConfigured} icon={<GoogleMark size={14} />} onClick={() => (window.location.href = "/api/integrations/google/start")}>
+          <Button variant={g.connected ? "secondary" : "primary"} disabled={!sys?.googleOAuthConfigured || !isOwner} icon={<GoogleMark size={14} />} onClick={() => (window.location.href = "/api/integrations/google/start")}>
             {g.connected ? "Reconnect" : "Connect Google"}
           </Button>
         </div>
       </Section>
 
       <Section icon={<DriveMark size={20} />} title="Google Drive · resumes" description="Each job gets a folder. Drop resumes into it and they're imported automatically.">
-        <Field label="Root folder (in the connected account's My Drive)" hint="Created if it doesn't exist. Use / for sub-folders.">
+        <Field label="Root folder (in the connected account's My Drive)" hint="Created if it doesn't exist. Use / for sub-folders. Changing it moves the existing job folders and resumes over.">
           <div className="flex gap-2">
             <span className="relative flex-1">
               <FolderOpen size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted" />
