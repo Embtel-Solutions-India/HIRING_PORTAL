@@ -15,7 +15,7 @@ export interface NewInterview {
   durationMin: number;
   interviewerIds: string[];
   location?: string | null;
-  /** Invite the candidate (calendar invite, or an email if Google isn't connected). */
+  /** Invite the candidate: a confirmation email, plus a calendar invite when Google is connected. */
   notifyCandidate: boolean;
   bookedVia?: string | null;
   actorId: string | null;
@@ -29,6 +29,8 @@ export async function createInterview(input: NewInterview) {
   if (!app) throw new HttpError(404, "Application not found");
   const c = { ...app.candidates, job_id: app.job_id, job_title: app.jobs?.title ?? null };
   const interviewers = await prisma.users.findMany({ where: { id: { in: input.interviewerIds } }, select: { email: true, name: true } });
+  // The scheduling recruiter also gets the event on their calendar, even when they aren't interviewing.
+  const actor = input.actorId ? await prisma.users.findUnique({ where: { id: input.actorId }, select: { email: true } }) : null;
   const org = await getSetting("org");
   const g = await getSetting("google");
   const end = new Date(input.start.getTime() + input.durationMin * 60_000);
@@ -48,7 +50,7 @@ export async function createInterview(input: NewInterview) {
       description,
       start: input.start,
       end,
-      attendees: [...interviewers.map((i) => i.email), ...(inviteCandidate ? [c.email] : [])],
+      attendees: [...interviewers.map((i) => i.email), ...(actor ? [actor.email] : []), ...(inviteCandidate ? [c.email] : [])],
       withMeet: input.type === "video" && g.autoMeetLinks,
       location: location ?? undefined,
       sendUpdates: true,
@@ -89,13 +91,13 @@ export async function createInterview(input: NewInterview) {
   await touch([app.id]);
   await logActivity(input.actorId, "interview_scheduled", `${input.bookedVia ? "booked" : "scheduled"} ${input.title.toLowerCase()} with ${name}`, c.id);
 
-  // Without Google Calendar the candidate still gets a confirmation email.
-  if (inviteCandidate && !calendarEventId) {
+  // Sent alongside Google's calendar invite (or on its own when Google isn't connected).
+  if (inviteCandidate) {
     const when = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: config.orgTimezone, timeZoneName: "short" }).format(input.start);
     await createCampaign({
       recipients: [{ candidateId: c.id, applicationId: app.id }],
       subject: `Interview confirmed: ${input.title}`,
-      body: `Hi {{first_name}},\n\nYour ${input.title.toLowerCase()} for {{job_title}} is confirmed for ${when}${location ? ` at ${location}` : ""}.\n\nSee you then,\n{{sender_name}}`,
+      body: `Hi {{first_name}},\n\nYour ${input.title.toLowerCase()} for {{job_title}} is confirmed for ${when}${location ? ` at ${location}` : ""}.${meetLink ? `\n\nJoin on Google Meet: ${meetLink}` : ""}\n\nSee you then,\n{{sender_name}}`,
       actorId: input.actorId,
     });
   }

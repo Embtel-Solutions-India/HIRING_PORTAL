@@ -108,7 +108,7 @@ export function ScheduleInterviewModal({ open, onClose, candidateId, application
     if (!ok) return;
     toast(
       settings.google.connected
-        ? `Interview booked · Google Calendar invite sent to ${notify ? "candidate & interviewers" : "interviewers"}`
+        ? `Interview booked · Google Calendar invite sent to ${notify ? "candidate, interviewers & you · confirmation emailed to candidate" : "interviewers & you"}`
         : `Interview booked${notify ? " · confirmation emailed to candidate" : ""}`,
     );
     onClose();
