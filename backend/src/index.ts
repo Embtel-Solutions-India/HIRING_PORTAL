@@ -12,6 +12,7 @@ import { sendDueCampaigns } from "./email.ts";
 import { HttpError, loadUser } from "./http.ts";
 import { resumePendingParses } from "./pipeline.ts";
 import adminRoutes from "./routes/admin.ts";
+import applicationRoutes from "./routes/applications.ts";
 import authRoutes from "./routes/auth.ts";
 import bootstrapRoutes from "./routes/bootstrap.ts";
 import candidateRoutes from "./routes/candidates.ts";
@@ -59,6 +60,7 @@ app.get("/api/health", async () => {
 await app.register(authRoutes);
 await app.register(bootstrapRoutes);
 await app.register(candidateRoutes);
+await app.register(applicationRoutes);
 await app.register(interviewRoutes);
 await app.register(adminRoutes);
 await app.register(driveRoutes);

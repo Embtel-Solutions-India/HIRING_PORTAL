@@ -8,7 +8,7 @@ import { HttpError } from "./http.ts";
 import { getSetting } from "./settings.ts";
 
 export interface NewInterview {
-  candidateId: string;
+  applicationId: string;
   title: string;
   type: "phone" | "video" | "onsite";
   start: Date;
@@ -22,12 +22,12 @@ export interface NewInterview {
 }
 
 export async function createInterview(input: NewInterview) {
-  const found = await prisma.candidates.findUnique({
-    where: { id: input.candidateId },
-    select: { id: true, first_name: true, last_name: true, email: true, job_id: true, jobs: { select: { title: true } } },
+  const app = await prisma.applications.findUnique({
+    where: { id: input.applicationId },
+    select: { id: true, job_id: true, jobs: { select: { title: true } }, candidates: { select: { id: true, first_name: true, last_name: true, email: true } } },
   });
-  if (!found) throw new Error("Candidate not found");
-  const c = { ...found, job_title: found.jobs?.title ?? null };
+  if (!app) throw new HttpError(404, "Application not found");
+  const c = { ...app.candidates, job_id: app.job_id, job_title: app.jobs?.title ?? null };
   const interviewers = await prisma.users.findMany({ where: { id: { in: input.interviewerIds } }, select: { email: true, name: true } });
   const org = await getSetting("org");
   const g = await getSetting("google");
@@ -67,6 +67,7 @@ export async function createInterview(input: NewInterview) {
       return tx.interviews.create({
         data: {
           candidate_id: c.id,
+          application_id: app.id,
           job_id: c.job_id,
           title: input.title,
           type: input.type,
@@ -91,7 +92,7 @@ export async function createInterview(input: NewInterview) {
   if (inviteCandidate && !calendarEventId) {
     const when = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: config.orgTimezone, timeZoneName: "short" }).format(input.start);
     await createCampaign({
-      recipientIds: [c.id],
+      recipients: [{ candidateId: c.id, applicationId: app.id }],
       subject: `Interview confirmed: ${input.title}`,
       body: `Hi {{first_name}},\n\nYour ${input.title.toLowerCase()} for {{job_title}} is confirmed for ${when}${location ? ` at ${location}` : ""}.\n\nSee you then,\n{{sender_name}}`,
       actorId: input.actorId,

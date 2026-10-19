@@ -16,12 +16,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { CandidateQuickView } from "../components/CandidateQuickView";
 import { Avatar, Badge, Checkbox, MatchScore, PageHeader, Select, Stars } from "../components/ui";
-import { useCan, useJobMap, useSourceMap, useStore, useTeamMap } from "../data/store";
-import type { Candidate, Stage } from "../types";
+import { useCan, useCards, useJobMap, useSourceMap, useStore, useTeamMap, type Card } from "../data/store";
+import type { Stage } from "../types";
 import { cn, daysSince, fullName, tint } from "../lib/utils";
 
 export default function Pipeline() {
-  const candidates = useStore((s) => s.candidates);
+  const cards = useCards();
   const stages = useStore((s) => s.stages);
   const jobs = useStore((s) => s.jobs);
   const team = useStore((s) => s.team);
@@ -63,35 +63,35 @@ export default function Pipeline() {
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return candidates.filter(
-      (c) =>
-        (jobId === "all" || c.jobId === jobId) &&
-        (ownerId === "all" || c.ownerId === ownerId) &&
+    return cards.filter(
+      ({ app, candidate: c }) =>
+        (jobId === "all" || app.jobId === jobId) &&
+        (ownerId === "all" || app.ownerId === ownerId) &&
         (sourceId === "all" || (sourceId === "none" ? !sources.some((s) => s.id === c.sourceId) : c.sourceId === sourceId)) &&
         (!term || [fullName(c), c.currentTitle, ...c.skills].join(" ").toLowerCase().includes(term)),
     );
-  }, [candidates, jobId, ownerId, sourceId, sources, q]);
+  }, [cards, jobId, ownerId, sourceId, sources, q]);
 
-  const upcomingByCandidate = useMemo(() => {
+  const upcomingByApplication = useMemo(() => {
     const m = new Set<string>();
-    interviews.forEach((i) => i.status === "scheduled" && parseISO(i.start) > new Date() && m.add(i.candidateId));
+    interviews.forEach((i) => i.status === "scheduled" && parseISO(i.start) > new Date() && m.add(i.applicationId));
     return m;
   }, [interviews]);
 
   const visibleStages = stages.filter((s) => showClosed || s.kind !== "closed");
-  const active = activeId ? candidates.find((c) => c.id === activeId) : null;
+  const active = activeId ? cards.find((c) => c.app.id === activeId) : null;
 
   const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
   const onDragEnd = (e: DragEndEvent) => {
     setActiveId(null);
     const id = String(e.active.id);
     const to = e.over?.id ? String(e.over.id) : null;
-    const c = candidates.find((x) => x.id === id);
-    if (!c || !to || to === c.stageId) return;
-    const from = c.stageId;
+    const card = cards.find((x) => x.app.id === id);
+    if (!card || !to || to === card.app.stageId) return;
+    const from = card.app.stageId;
     const stage = stages.find((s) => s.id === to)!;
     moveStage([id], to, { notify: notify && canEmail });
-    toast(`${fullName(c)} → ${stage.name}${notify && canEmail && stage.autoEmailTemplateId ? " · email sent" : ""}`, "success", {
+    toast(`${fullName(card.candidate)} → ${stage.name}${notify && canEmail && stage.autoEmailTemplateId ? " · email sent" : ""}`, "success", {
       label: "Undo",
       onClick: () => moveStage([id], from),
     });
@@ -145,9 +145,9 @@ export default function Pipeline() {
                 columnRefs.current[stage.id] = el;
               }}
               highlighted={focusStage === stage.id}
-              items={filtered.filter((c) => c.stageId === stage.id)}
+              items={filtered.filter((c) => c.app.stageId === stage.id)}
               showJob={jobId === "all"}
-              upcoming={upcomingByCandidate}
+              upcoming={upcomingByApplication}
               canDrag={canMove}
               onOpen={setOpenId}
             />
@@ -156,13 +156,13 @@ export default function Pipeline() {
         <DragOverlay dropAnimation={{ duration: 180, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }}>
           {active && (
             <div className="w-[272px] rotate-[2deg]">
-              <CardBody candidate={active} showJob={jobId === "all"} upcoming={upcomingByCandidate.has(active.id)} lifted />
+              <CardBody card={active} showJob={jobId === "all"} upcoming={upcomingByApplication.has(active.app.id)} lifted />
             </div>
           )}
         </DragOverlay>
       </DndContext>
 
-      <CandidateQuickView candidateId={openId} onClose={() => setOpenId(null)} />
+      <CandidateQuickView applicationId={openId} onClose={() => setOpenId(null)} />
     </>
   );
 }
@@ -178,7 +178,7 @@ function Column({
   ref,
 }: {
   stage: Stage;
-  items: Candidate[];
+  items: Card[];
   showJob: boolean;
   upcoming: Set<string>;
   canDrag: boolean;
@@ -187,7 +187,7 @@ function Column({
   ref: (el: HTMLDivElement | null) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
-  const sorted = [...items].sort((a, b) => Number(b.starred) - Number(a.starred) || b.summary.matchScore - a.summary.matchScore);
+  const sorted = [...items].sort((a, b) => Number(b.app.starred) - Number(a.app.starred) || b.app.summary.matchScore - a.app.summary.matchScore);
   return (
     <div ref={ref} className="flex w-[288px] shrink-0 snap-start flex-col">
       <div className="mb-2 flex items-center gap-2 px-1">
@@ -209,7 +209,7 @@ function Column({
         }}
       >
         {sorted.map((c) => (
-          <DraggableCard key={c.id} candidate={c} showJob={showJob} upcoming={upcoming.has(c.id)} disabled={!canDrag} onOpen={onOpen} />
+          <DraggableCard key={c.app.id} card={c} showJob={showJob} upcoming={upcoming.has(c.app.id)} disabled={!canDrag} onOpen={onOpen} />
         ))}
         {!items.length && <p className="py-8 text-center text-xs font-medium text-faint">Drop candidates here</p>}
       </div>
@@ -217,34 +217,34 @@ function Column({
   );
 }
 
-function DraggableCard({ candidate, showJob, upcoming, disabled, onOpen }: { candidate: Candidate; showJob: boolean; upcoming: boolean; disabled: boolean; onOpen: (id: string) => void }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: candidate.id, disabled });
+function DraggableCard({ card, showJob, upcoming, disabled, onOpen }: { card: Card; showJob: boolean; upcoming: boolean; disabled: boolean; onOpen: (id: string) => void }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: card.app.id, disabled });
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      onClick={() => onOpen(candidate.id)}
+      onClick={() => onOpen(card.app.id)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onOpen(candidate.id);
+        if (e.key === "Enter") onOpen(card.app.id);
         listeners?.onKeyDown?.(e);
       }}
       className={cn("touch-manipulation outline-none", isDragging && "opacity-30")}
-      aria-label={`${fullName(candidate)}, open quick view`}
+      aria-label={`${fullName(card.candidate)}, open quick view`}
     >
-      <CardBody candidate={candidate} showJob={showJob} upcoming={upcoming} />
+      <CardBody card={card} showJob={showJob} upcoming={upcoming} />
     </div>
   );
 }
 
-function CardBody({ candidate: c, showJob, upcoming, lifted }: { candidate: Candidate; showJob: boolean; upcoming: boolean; lifted?: boolean }) {
+function CardBody({ card: { app, candidate: c }, showJob, upcoming, lifted }: { card: Card; showJob: boolean; upcoming: boolean; lifted?: boolean }) {
   const jobMap = useJobMap();
   const teamMap = useTeamMap();
   const sourceMap = useSourceMap();
-  const owner = teamMap[c.ownerId];
+  const owner = teamMap[app.ownerId];
   const src = sourceMap[c.sourceId];
-  const days = daysSince(c.stageEnteredAt);
-  const pending = c.summary.status === "pending";
+  const days = daysSince(app.stageEnteredAt);
+  const pending = app.summary.status === "pending";
   return (
     <article
       className={cn(
@@ -257,15 +257,15 @@ function CardBody({ candidate: c, showJob, upcoming, lifted }: { candidate: Cand
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1 truncate text-[13.5px] font-bold">
             {fullName(c)}
-            {c.starred && <Star size={12} className="shrink-0 fill-amber-400 text-amber-400" />}
+            {app.starred && <Star size={12} className="shrink-0 fill-amber-400 text-amber-400" />}
           </p>
           <p className="truncate text-xs text-muted">{c.currentTitle}</p>
         </div>
-        {!pending && <MatchScore score={c.summary.matchScore} size={32} />}
+        {!pending && <MatchScore score={app.summary.matchScore} size={32} />}
       </div>
       {(showJob || src) && (
         <p className="mt-2 flex min-w-0 items-center gap-1.5 text-[12px] font-semibold text-ink-2">
-          {showJob && <span className="truncate">{jobMap[c.jobId]?.title}</span>}
+          {showJob && <span className="truncate">{jobMap[app.jobId]?.title}</span>}
           {src && (
             <span className="inline-flex shrink-0 items-center gap-1 font-medium text-muted">
               {showJob && <span className="text-faint">·</span>}
@@ -275,9 +275,9 @@ function CardBody({ candidate: c, showJob, upcoming, lifted }: { candidate: Cand
           )}
         </p>
       )}
-      <p className="mt-1.5 line-clamp-2 text-[12px] leading-snug text-muted">{pending ? "Summary generating…" : c.summary.headline}</p>
+      <p className="mt-1.5 line-clamp-2 text-[12px] leading-snug text-muted">{pending ? "Summary generating…" : app.summary.headline}</p>
       <div className="mt-2.5 flex min-w-0 items-center gap-2">
-        <Stars value={c.rating} size={11} />
+        <Stars value={app.rating} size={11} />
         {upcoming ? (
           <Badge tone="info" className="min-w-0">
             <CalendarClock size={11} className="shrink-0" /> <span className="truncate">Interview</span>

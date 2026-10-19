@@ -1,5 +1,6 @@
 /** Database rows → the shapes in frontend/src/types.ts. */
 import type {
+  Application,
   BookingLink,
   Candidate,
   EmailCampaign,
@@ -54,29 +55,47 @@ export const job = (j: Row): Job & { description: string } => ({
   description: j.description,
 });
 
+/** The AI summary to show for an application; while the person's resume is parsing it's a placeholder. */
+function summaryFor(a: Row, parseStatus: string): Application["summary"] {
+  if (parseStatus === "pending") return { headline: "Generating summary…", overview: "", strengths: [], concerns: [], matchScore: 0, yearsExperience: 0, generatedAt: a.created_at, status: "pending" };
+  if (a.summary) return a.summary;
+  return {
+    headline: parseStatus === "failed" ? "Couldn't read this resume" : "No AI summary",
+    overview:
+      parseStatus === "failed"
+        ? "The file couldn't be parsed. Open the resume to review it manually."
+        : aiConfigured()
+          ? "AI summaries are turned off in Settings."
+          : "Add an Anthropic API key (ANTHROPIC_API_KEY) on the server to generate summaries automatically.",
+    strengths: [],
+    concerns: [],
+    matchScore: 0,
+    yearsExperience: 0,
+    generatedAt: a.created_at,
+    status: "failed",
+  };
+}
+
+/** `outcome` is the application's latest move into a closed stage (null when it was never closed). */
+export const application = (a: Row, parseStatus: string, outcome: Row | null): Application => ({
+  id: a.id,
+  candidateId: a.candidate_id,
+  jobId: a.job_id ?? "",
+  stageId: a.stage_id,
+  appliedAt: a.applied_at,
+  stageEnteredAt: a.stage_entered_at,
+  lastActivityAt: a.last_activity_at,
+  ownerId: a.owner_id ?? "",
+  rating: a.rating,
+  starred: a.starred,
+  summary: summaryFor(a, parseStatus),
+  outcome: outcome
+    ? { reasonId: outcome.reason_id ?? "", reasonLabel: outcome.reason_label ?? "", fromStageId: outcome.from_stage_id ?? "", actorId: outcome.actor_id ?? "", note: outcome.note ?? "", at: outcome.created_at }
+    : null,
+  createdAt: a.created_at,
+});
+
 export function candidate(c: Row, notes: Row[]): Candidate {
-  let summary: Candidate["summary"];
-  if (c.parse_status === "pending") {
-    summary = { headline: "Generating summary…", overview: "", strengths: [], concerns: [], matchScore: 0, yearsExperience: 0, generatedAt: c.created_at, status: "pending" };
-  } else if (c.summary) {
-    summary = c.summary;
-  } else {
-    summary = {
-      headline: c.parse_status === "failed" ? "Couldn't read this resume" : "No AI summary",
-      overview:
-        c.parse_status === "failed"
-          ? "The file couldn't be parsed. Open the resume to review it manually."
-          : aiConfigured()
-            ? "AI summaries are turned off in Settings."
-            : "Add an Anthropic API key (ANTHROPIC_API_KEY) on the server to generate summaries automatically.",
-      strengths: [],
-      concerns: [],
-      matchScore: 0,
-      yearsExperience: 0,
-      generatedAt: c.created_at,
-      status: "failed",
-    };
-  }
   return {
     id: c.id,
     firstName: c.first_name,
@@ -86,27 +105,23 @@ export function candidate(c: Row, notes: Row[]): Candidate {
     location: c.location,
     currentTitle: c.current_title || (c.parse_status === "pending" ? "Parsing resume…" : ""),
     currentCompany: c.current_company,
-    jobId: c.job_id ?? "",
-    stageId: c.stage_id,
     sourceId: c.source_id ?? "",
-    appliedAt: c.applied_at,
-    stageEnteredAt: c.stage_entered_at,
-    ownerId: c.owner_id ?? "",
-    rating: c.rating,
     tags: c.tags,
     skills: c.skills,
     resume: c.resume ? { ...c.resume, syncState: c.resume_files?.state } : { storage: "local", driveFileId: "", fileName: "No resume", mimeType: "", sizeKb: 0, uploadedAt: c.created_at, uploadedById: "", driveUrl: "" },
+    parseStatus: c.parse_status,
     experience: c.experience,
     education: c.education,
-    summary,
-    notes: notes.map((n) => ({ id: n.id, authorId: n.author_id ?? "", body: n.body, createdAt: n.created_at })),
-    starred: c.starred,
+    notes: notes.map((n) => ({ id: n.id, authorId: n.author_id ?? "", body: n.body, createdAt: n.created_at, applicationId: n.application_id ?? "" })),
+    possibleDuplicateOf: c.possible_duplicate_of ?? "",
+    createdAt: c.created_at,
   };
 }
 
 export const interview = (i: Row, feedback: Row[]): Interview => ({
   id: i.id,
   candidateId: i.candidate_id,
+  applicationId: i.application_id,
   jobId: i.job_id ?? "",
   title: i.title,
   type: i.type,

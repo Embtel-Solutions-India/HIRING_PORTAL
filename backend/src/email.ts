@@ -79,12 +79,16 @@ function toHtml(text: string, signature: string, messageId?: string) {
 
 // ---------- campaigns ----------
 
-/** Creates a campaign with one message per candidate. Sends right away unless scheduled for later. */
-export async function createCampaign(input: { recipientIds: string[]; subject: string; body: string; templateId?: string | null; scheduledAt?: string | null; actorId: string | null }) {
+/**
+ * Creates a campaign with one message per candidate. Sends right away unless scheduled for later.
+ * Each recipient's application decides {{job_title}} and {{stage}}.
+ */
+export async function createCampaign(input: { recipients: { candidateId: string; applicationId: string | null }[]; subject: string; body: string; templateId?: string | null; scheduledAt?: string | null; actorId: string | null }) {
   const org = await getSetting("org");
   const sendAt = input.scheduledAt ? new Date(input.scheduledAt) : new Date();
   const scheduled = sendAt.getTime() > Date.now() + 30_000;
-  const recipients = await prisma.candidates.findMany({ where: { id: { in: input.recipientIds } }, select: { id: true, email: true } });
+  const appFor = new Map(input.recipients.map((r) => [r.candidateId, r.applicationId]));
+  const recipients = await prisma.candidates.findMany({ where: { id: { in: [...appFor.keys()] } }, select: { id: true, email: true } });
   const campaign = await prisma.email_campaigns.create({
     data: {
       subject: input.subject,
@@ -98,7 +102,7 @@ export async function createCampaign(input: { recipientIds: string[]; subject: s
     select: { id: true },
   });
   for (const r of recipients) {
-    await prisma.email_messages.create({ data: { campaign_id: campaign.id, candidate_id: r.id, to_address: r.email } });
+    await prisma.email_messages.create({ data: { campaign_id: campaign.id, candidate_id: r.id, application_id: appFor.get(r.id) ?? null, to_address: r.email } });
   }
   const label = recipients.length === 1 ? "1 candidate" : `${recipients.length} candidates`;
   await logActivity(input.actorId, "email_sent", `${scheduled ? "scheduled" : "sent"} “${input.subject}” to ${label}`, recipients.length === 1 ? recipients[0]!.id : null);
@@ -122,10 +126,11 @@ export async function sendCampaign(campaignId: string) {
           id: true,
           to_address: true,
           candidate_id: true,
-          candidates: { select: { first_name: true, last_name: true, jobs: { select: { title: true } }, stages: { select: { name: true } } } },
+          candidates: { select: { first_name: true, last_name: true } },
+          applications: { select: { jobs: { select: { title: true } }, stages: { select: { name: true } } } },
         },
       })
-    ).map(({ candidates: c, ...m }) => ({ ...m, first_name: c?.first_name, last_name: c?.last_name, job_title: c?.jobs?.title, stage: c?.stages.name }));
+    ).map(({ candidates: c, applications: a, ...m }) => ({ ...m, first_name: c?.first_name, last_name: c?.last_name, job_title: a?.jobs?.title, stage: a?.stages.name }));
     let failures = 0;
     for (const m of messages) {
       try {

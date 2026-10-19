@@ -5,9 +5,12 @@ import { Link, useNavigate } from "react-router-dom";
 import { ScheduleInterviewModal } from "../components/ScheduleInterviewModal";
 import { UploadResumeModal } from "../components/UploadResumeModal";
 import { Avatar, AvatarStack, Button, DriveMark, EmptyState, Segmented, Select, StageBadge } from "../components/ui";
-import { useCan, useCurrentUser, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
-import type { Candidate, Interview, Stage } from "../types";
+import { useCan, useCards, useCurrentUser, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
+import type { Application, Candidate as Person, Interview, Stage } from "../types";
 import { cn, daysSince, fmtDayLabel, fmtTime, fullName, timeAgo } from "../lib/utils";
+
+/** One application with its person folded in (id = the person); every dashboard number counts applications. */
+type Candidate = Application & Person & { applicationId: string };
 
 type Range = 7 | 30 | 90;
 
@@ -25,7 +28,8 @@ export default function Dashboard() {
 
 function TeamDashboard() {
   const user = useCurrentUser()!;
-  const candidates = useStore((s) => s.candidates);
+  const cards = useCards();
+  const candidates = useMemo<Candidate[]>(() => cards.map(({ app, candidate }) => ({ ...app, ...candidate, applicationId: app.id })), [cards]);
   const stages = useStore((s) => s.stages);
   const jobs = useStore((s) => s.jobs);
   const interviews = useStore((s) => s.interviews);
@@ -566,7 +570,8 @@ function ActivityFeed({ items }: { items: { id: string; actorId: string; message
 
 function InterviewerDashboard() {
   const user = useCurrentUser()!;
-  const candidates = useStore((s) => s.candidates);
+  const cards = useCards();
+  const candidates = useMemo<Candidate[]>(() => cards.map(({ app, candidate }) => ({ ...app, ...candidate, applicationId: app.id })), [cards]);
   const interviews = useStore((s) => s.interviews);
   const stageMap = useStageMap();
   const jobMap = useJobMap();
@@ -627,7 +632,7 @@ function InterviewerDashboard() {
         <Card title="Your candidates" action={<Link to="/review" className="text-[12px] font-semibold text-brand-700 hover:underline">Review</Link>} className="h-[320px] xl:h-auto">
           <ul className="scroll-slim h-full space-y-1 overflow-y-auto">
             {candidates.map((c) => (
-              <li key={c.id}>
+              <li key={c.applicationId}>
                 <Link to={`/candidates/${c.id}`} className="flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-paper">
                   <Avatar name={fullName(c)} size={28} />
                   <span className="min-w-0 flex-1">

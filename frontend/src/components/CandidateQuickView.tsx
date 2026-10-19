@@ -9,8 +9,10 @@ import { ScheduleInterviewModal } from "./ScheduleInterviewModal";
 import { SourceBadge, SourcePicker } from "./SourcePicker";
 import { Avatar, Button, Drawer, IconButton, StageBadge, Stars, Tabs } from "./ui";
 
-export function CandidateQuickView({ candidateId, onClose }: { candidateId: string | null; onClose: () => void }) {
-  const candidate = useStore((s) => s.candidates.find((c) => c.id === candidateId));
+/** Quick look at one application (a card on the board) and the person behind it. */
+export function CandidateQuickView({ applicationId, onClose }: { applicationId: string | null; onClose: () => void }) {
+  const app = useStore((s) => s.applications.find((a) => a.id === applicationId));
+  const candidate = useStore((s) => (app ? s.candidates.find((c) => c.id === app.candidateId) : undefined));
   const setRating = useStore((s) => s.setRating);
   const setCandidateSource = useStore((s) => s.setCandidateSource);
   const canTag = useCan("candidates.tagSource");
@@ -24,8 +26,8 @@ export function CandidateQuickView({ candidateId, onClose }: { candidateId: stri
 
   return (
     <>
-      <Drawer open={!!candidate} onClose={onClose} label="Candidate quick view" width={760}>
-        {candidate && (
+      <Drawer open={!!candidate && !!app} onClose={onClose} label="Candidate quick view" width={760}>
+        {candidate && app && (
           <>
             <header className="border-b border-line bg-surface px-5 pt-4">
               <div className="flex items-start gap-3">
@@ -33,12 +35,12 @@ export function CandidateQuickView({ candidateId, onClose }: { candidateId: stri
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="text-lg font-bold tracking-tight">{fullName(candidate)}</h2>
-                    <StageBadge stage={stageMap[candidate.stageId]} />
+                    <StageBadge stage={stageMap[app.stageId]} />
                     <SourceBadge sourceId={candidate.sourceId} muted={false} />
                   </div>
                   <p className="text-sm text-muted">
                     {candidate.currentTitle}
-                    {candidate.currentCompany && ` at ${candidate.currentCompany}`} · applied for <b className="font-semibold text-ink-2">{jobMap[candidate.jobId]?.title}</b>
+                    {candidate.currentCompany && ` at ${candidate.currentCompany}`} · applied for <b className="font-semibold text-ink-2">{jobMap[app.jobId]?.title}</b>
                   </p>
                 </div>
                 <IconButton label="Close" onClick={onClose}>
@@ -46,7 +48,7 @@ export function CandidateQuickView({ candidateId, onClose }: { candidateId: stri
                 </IconButton>
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <MoveStageMenu candidateIds={[candidate.id]} currentStageId={candidate.stageId} size="sm" />
+                <MoveStageMenu applicationIds={[app.id]} currentStageId={app.stageId} size="sm" />
                 <Button size="sm" icon={<CalendarPlus size={14} />} onClick={() => setScheduleOpen(true)}>
                   Schedule
                 </Button>
@@ -56,7 +58,7 @@ export function CandidateQuickView({ candidateId, onClose }: { candidateId: stri
                   </Button>
                 )}
                 <span className="ml-auto flex items-center gap-3">
-                  <Stars value={candidate.rating} onChange={canNote ? (v) => setRating(candidate.id, v) : undefined} />
+                  <Stars value={app.rating} onChange={canNote ? (v) => setRating(app.id, v) : undefined} />
                   <Link to={`/candidates/${candidate.id}`} onClick={onClose} className="inline-flex items-center gap-0.5 text-[13px] font-semibold text-brand-700 hover:underline">
                     Full profile <ArrowUpRight size={14} />
                   </Link>
@@ -76,7 +78,7 @@ export function CandidateQuickView({ candidateId, onClose }: { candidateId: stri
               {tab === "summary" ? (
                 <div className="space-y-4 p-5">
                   <ContactRow candidate={candidate} />
-                  <SummaryCard candidate={candidate} />
+                  <SummaryCard candidate={candidate} app={app} />
                   <div className="card p-4 text-[13px] text-ink-2">
                     <p className="label mb-2">At a glance</p>
                     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
@@ -86,8 +88,8 @@ export function CandidateQuickView({ candidateId, onClose }: { candidateId: stri
                           {canTag ? <SourcePicker variant="badge" value={candidate.sourceId} onChange={(id) => setCandidateSource([candidate.id], id)} /> : <SourceBadge sourceId={candidate.sourceId} />}
                         </dd>
                       </div>
-                      <Info k="In stage" v={`${daysSince(candidate.stageEnteredAt)} days`} />
-                      <Info k="Applied" v={`${daysSince(candidate.appliedAt)} days ago`} />
+                      <Info k="In stage" v={`${daysSince(app.stageEnteredAt)} days`} />
+                      <Info k="Applied" v={`${daysSince(app.appliedAt)} days ago`} />
                       <Info k="Notes" v={`${candidate.notes.length}`} />
                       <Info k="Tags" v={candidate.tags.join(", ") || "—"} />
                     </dl>
@@ -102,10 +104,10 @@ export function CandidateQuickView({ candidateId, onClose }: { candidateId: stri
           </>
         )}
       </Drawer>
-      {candidate && (
+      {candidate && app && (
         <>
           <ComposeEmailModal open={emailOpen} onClose={() => setEmailOpen(false)} recipientIds={[candidate.id]} />
-          <ScheduleInterviewModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} candidateId={candidate.id} />
+          <ScheduleInterviewModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} candidateId={candidate.id} applicationId={app.id} />
         </>
       )}
     </>

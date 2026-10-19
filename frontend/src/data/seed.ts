@@ -1,12 +1,18 @@
 import { addDays, setHours, setMinutes, startOfDay, subDays, subHours } from "date-fns";
 import type {
+  Application,
   BookingLink,
   Candidate,
   Experience,
   Interview,
   Job,
+  Note,
   TeamMember,
 } from "../types";
+
+/** Demo people with their single application folded in (the demo seeder splits them). */
+export type SeedCandidate = Omit<Candidate, "notes" | "parseStatus" | "possibleDuplicateOf" | "createdAt"> &
+  Pick<Application, "jobId" | "stageId" | "appliedAt" | "stageEnteredAt" | "ownerId" | "rating" | "starred" | "summary"> & { notes: Omit<Note, "applicationId">[] };
 
 // Deterministic RNG so the demo data looks the same on every reset.
 function mulberry32(seed: number) {
@@ -192,8 +198,8 @@ function buildExperience(family: Family, years: number): Experience[] {
   return items;
 }
 
-function buildCandidates(): Candidate[] {
-  const out: Candidate[] = [];
+function buildCandidates(): SeedCandidate[] {
+  const out: SeedCandidate[] = [];
   const usedNames = new Set<string>();
   const openJobs = seedJobs;
   for (let i = 0; i < 42; i++) {
@@ -271,7 +277,7 @@ function buildCandidates(): Candidate[] {
 
 export const seedCandidates = buildCandidates();
 
-function buildInterviews(cands: Candidate[]): Interview[] {
+function buildInterviews(cands: SeedCandidate[]): Interview[] {
   const out: Interview[] = [];
   const today = startOfDay(new Date());
   const inPlay = cands.filter((c) => ["interview", "final", "offer", "shortlisted"].includes(c.stageId));
@@ -289,6 +295,7 @@ function buildInterviews(cands: Candidate[]): Interview[] {
     out.push({
       id: `i_${i + 1}`,
       candidateId: c.id,
+      applicationId: c.id,
       jobId: c.jobId,
       title,
       type,

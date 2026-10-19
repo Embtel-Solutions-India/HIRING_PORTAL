@@ -7,14 +7,23 @@ import { ComposeEmailModal } from "../components/ComposeEmailModal";
 import { SourceBadge, SourcePicker } from "../components/SourcePicker";
 import { UploadResumeModal } from "../components/UploadResumeModal";
 import { Avatar, Button, Checkbox, DriveMark, EmptyState, MatchScore, PageHeader, Select, StageBadge, Stars } from "../components/ui";
-import { useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
-import type { Candidate } from "../types";
+import { useCan, useJobMap, useLatestAppMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
+import type { Application, Candidate as Person } from "../types";
 import { cn, daysSince, fmtDate, fullName, resumeKeptNote } from "../lib/utils";
+
+/** One row per person, showing the application they were most recently worked on for (id = the person). */
+type Candidate = Application & Person & { applicationId: string };
 
 type SortKey = "name" | "match" | "applied" | "inStage" | "rating";
 
 export default function Candidates() {
-  const candidates = useStore((s) => s.candidates);
+  const people = useStore((s) => s.candidates);
+  const latest = useLatestAppMap();
+  const candidates = useMemo<Candidate[]>(
+    () => people.flatMap((c) => (latest[c.id] ? [{ ...latest[c.id]!, ...c, applicationId: latest[c.id]!.id }] : [])),
+    [people, latest],
+  );
+  const appIdOf = (candidateId: string) => latest[candidateId]?.id ?? "";
   const jobs = useStore((s) => s.jobs);
   const stages = useStore((s) => s.stages);
   const team = useStore((s) => s.team);
@@ -168,7 +177,7 @@ export default function Candidates() {
             Clear
           </button>
           <span className="ml-auto flex flex-wrap items-center gap-2">
-            <MoveStageMenu candidateIds={selected} align="right" size="sm" onMoved={() => setSelected([])} />
+            <MoveStageMenu applicationIds={selected.map(appIdOf).filter(Boolean)} align="right" size="sm" onMoved={() => setSelected([])} />
             {canTag && (
               <SourcePicker
                 variant="button"
@@ -313,7 +322,7 @@ export default function Candidates() {
         )}
       </div>
 
-      <CandidateQuickView candidateId={openId} onClose={() => setOpenId(null)} />
+      <CandidateQuickView applicationId={openId ? appIdOf(openId) || null : null} onClose={() => setOpenId(null)} />
       <ComposeEmailModal open={emailOpen} onClose={() => setEmailOpen(false)} recipientIds={selected} />
       <UploadResumeModal open={uploadOpen} onClose={() => setUploadOpen(false)} />
     </>

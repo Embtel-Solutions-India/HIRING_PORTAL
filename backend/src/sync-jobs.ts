@@ -1,6 +1,7 @@
 /** The sync worker: runs queued transfers one at a time, then polls Drive for changes. */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { newestOpenApplication } from "./applications.ts";
 import { config } from "./config.ts";
 import { Prisma, prisma } from "./db.ts";
 import { flagConflict, pollDriveChanges, portalPending } from "./drive-changes.ts";
@@ -73,10 +74,11 @@ async function toS3(job: JobRow, row: ResumeFileRow) {
   if (followUpRename) await enqueue(row.id, "rename_s3", { name: followUpRename });
 }
 
-/** Where a resume without a Drive file goes: its candidate's job/source folder. */
+/** Where a person's resume lives in Drive: the job/source folder of their newest open application. */
 async function folderForRow(row: ResumeFileRow): Promise<string> {
-  const c = row.candidate_id ? await prisma.candidates.findUnique({ where: { id: row.candidate_id }, select: { job_id: true, sources: { select: { name: true } } } }) : null;
-  return (await driveFolderFor(c?.job_id ?? null, c?.sources?.name)) ?? (await google.ensureRootFolder());
+  const c = row.candidate_id ? await prisma.candidates.findUnique({ where: { id: row.candidate_id }, select: { sources: { select: { name: true } } } }) : null;
+  const app = row.candidate_id ? await newestOpenApplication(row.candidate_id) : null;
+  return (await driveFolderFor(app?.jobId ?? null, c?.sources?.name)) ?? (await google.ensureRootFolder());
 }
 
 /** Creates a Drive file with a pre-generated id stored in the job, so a retry after a crash can't make a second file. */

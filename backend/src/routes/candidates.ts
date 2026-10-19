@@ -1,11 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { can } from "../../../frontend/src/lib/permissions.ts";
 import type { ResumeFile } from "../../../frontend/src/types.ts";
 import { logActivity } from "../activity.ts";
 import { prisma } from "../db.ts";
 import { config } from "../config.ts";
-import { createCampaign } from "../email.ts";
 import * as google from "../google.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
 import { createCandidate, enqueueParse } from "../pipeline.ts";
@@ -16,14 +14,9 @@ import { mimeFor, readResume, storeResume } from "../storage.ts";
 import { enqueue } from "../sync-queue.ts";
 import { digest, keyPrefix, safeKeyName } from "../sync-rules.ts";
 
-const MoveBody = z.object({ ids: z.array(z.string().uuid()).min(1).max(500), stageId: z.string(), notify: z.boolean().optional() });
 const PatchBody = z
   .object({
-    rating: z.number().int().min(0).max(5),
-    starred: z.boolean(),
     tags: z.array(z.string().max(40)).max(20),
-    ownerId: z.string().uuid().nullable(),
-    jobId: z.string().uuid(),
     firstName: z.string().max(100),
     lastName: z.string().max(100),
     email: z.string().max(200),
@@ -35,41 +28,14 @@ const PatchBody = z
 const fullName = (c: { first_name: string; last_name: string }) => `${c.first_name} ${c.last_name}`.trim();
 
 export default async function candidateRoutes(app: FastifyInstance) {
-  app.post("/api/candidates/move", async (req) => {
-    const user = requirePerm(req, "candidates.moveStage");
-    const body = MoveBody.parse(req.body);
-    const stage = await prisma.stages.findUnique({ where: { id: body.stageId } });
-    if (!stage) throw new HttpError(400, "Unknown stage");
-    const moved = await prisma.candidates.updateManyAndReturn({
-      where: { id: { in: body.ids }, stage_id: { not: stage.id } },
-      data: { stage_id: stage.id, stage_entered_at: new Date() },
-      select: { id: true, first_name: true, last_name: true },
-    });
-    for (const c of moved) await logActivity(user.id, "stage_change", `moved ${fullName(c)} to ${stage.name}`, c.id);
-    let emailed = 0;
-    if (body.notify && stage.auto_email_template_id && moved.length && can(user.role, moved.length > 1 ? "emails.sendBulk" : "emails.sendSingle")) {
-      const t = await prisma.email_templates.findUnique({ where: { id: stage.auto_email_template_id } });
-      if (t) {
-        await createCampaign({ recipientIds: moved.map((m) => m.id), subject: t.subject, body: t.body, templateId: t.id, actorId: user.id });
-        emailed = moved.length;
-      }
-    }
-    return { moved: moved.length, emailed };
-  });
-
   app.patch("/api/candidates/:id", async (req) => {
     const { id } = req.params as { id: string };
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     const body = PatchBody.parse(req.body);
-    const profileKeys = ["ownerId", "jobId", "firstName", "lastName", "email", "phone", "location", "tags"] as const;
-    const user = profileKeys.some((k) => k in body) ? requirePerm(req, "candidates.edit") : requirePerm(req, "candidates.addNote");
+    const user = requirePerm(req, "candidates.edit");
     await assertCandidateAccess(user, id);
     const data = {
-      rating: body.rating,
-      starred: body.starred,
       tags: body.tags,
-      owner_id: body.ownerId,
-      job_id: body.jobId,
       first_name: body.firstName,
       last_name: body.lastName,
       email: body.email,
@@ -86,9 +52,10 @@ export default async function candidateRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     if (!isUuid(id)) throw new HttpError(404, "Not found");
     await assertCandidateAccess(user, id);
-    const { body } = z.object({ body: z.string().trim().min(1).max(5000) }).parse(req.body);
+    const { body, applicationId } = z.object({ body: z.string().trim().min(1).max(5000), applicationId: z.string().uuid().nullish() }).parse(req.body);
     const c = await prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } });
-    await prisma.notes.create({ data: { candidate_id: id, author_id: user.id, body } });
+    if (applicationId && !(await prisma.applications.findFirst({ where: { id: applicationId, candidate_id: id }, select: { id: true } }))) throw new HttpError(400, "That application belongs to someone else");
+    await prisma.notes.create({ data: { candidate_id: id, application_id: applicationId ?? null, author_id: user.id, body } });
     await logActivity(user.id, "note", `added a note on ${fullName(c!)}`, id);
     return { ok: true };
   });
@@ -100,15 +67,6 @@ export default async function candidateRoutes(app: FastifyInstance) {
     const count = await markCandidatesDeleted(ids);
     await logActivity(user.id, "settings_changed", `deleted ${count} candidate${count === 1 ? "" : "s"} (resumes kept ${config.resumeDeleteGraceDays} days)`);
     return { deleted: count };
-  });
-
-  app.post("/api/candidates/:id/resummarize", async (req) => {
-    requirePerm(req, "candidates.edit");
-    const { id } = req.params as { id: string };
-    if (!isUuid(id)) throw new HttpError(404, "Not found");
-    await prisma.candidates.updateMany({ where: { id }, data: { parse_status: "pending" } });
-    enqueueParse(id);
-    return { ok: true };
   });
 
   // ---------- resume files ----------

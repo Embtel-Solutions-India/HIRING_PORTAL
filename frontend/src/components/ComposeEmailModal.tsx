@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Clock, Eye, PenLine, Send, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useCan, useJobMap, useStageMap, useStore } from "../data/store";
+import { useCan, useJobMap, useLatestAppMap, useStageMap, useStore } from "../data/store";
 import { cn, fullName, MERGE_FIELDS, renderTemplate } from "../lib/utils";
 import { Badge, Button, Field, Modal, Segmented, Select } from "./ui";
 
@@ -16,6 +16,7 @@ export function ComposeEmailModal({
   defaultTemplateId?: string;
 }) {
   const candidates = useStore((s) => s.candidates);
+  const latest = useLatestAppMap();
   const templates = useStore((s) => s.templates);
   const settings = useStore((s) => s.settings);
   const sendEmail = useStore((s) => s.sendEmail);
@@ -92,8 +93,8 @@ export function ComposeEmailModal({
 
   const ctx = (c: (typeof recipients)[number]) => ({
     candidate: c,
-    job: jobMap[c.jobId],
-    stage: stageMap[c.stageId],
+    job: jobMap[latest[c.id]?.jobId ?? ""],
+    stage: stageMap[latest[c.id]?.stageId ?? ""],
     orgName: settings.orgName,
     senderName: settings.senderName,
   });

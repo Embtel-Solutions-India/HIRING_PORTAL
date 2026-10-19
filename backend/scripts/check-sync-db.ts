@@ -164,8 +164,7 @@ const runOne = async (id: string, kind: string) => {
 // R4: purge clears the S3 pointers and the candidate's resume.
 {
   await clearQueue();
-  const stage = (await prisma.stages.findFirst())!;
-  const cand = await prisma.candidates.create({ data: { first_name: "R4", stage_id: stage.id, resume: { storage: "s3", fileName: "cv.pdf" } } });
+  const cand = await prisma.candidates.create({ data: { first_name: "R4", resume: { storage: "s3", fileName: "cv.pdf" } } });
   const r = await mk({ s3_key: null, candidate_id: cand.id, state: "pending_deletion", deleted_side: "drive", delete_after: new Date(Date.now() - 1000) });
   await enqueue(r.id, "purge");
   await runOne(r.id, "purge");
@@ -181,8 +180,7 @@ const runOne = async (id: string, kind: string) => {
 // R6: deleting a candidate keeps a conflict; restoring brings the conflict back, not "synced".
 {
   await clearQueue();
-  const stage = (await prisma.stages.findFirst())!;
-  const cand = await prisma.candidates.create({ data: { first_name: "R6", stage_id: stage.id } });
+  const cand = await prisma.candidates.create({ data: { first_name: "R6" } });
   const r = await mk({ candidate_id: cand.id, state: "conflict", conflict: { on: "content" } });
   assert.equal(await markCandidatesDeleted([cand.id]), 1);
   const pend = await fresh(r.id);
@@ -241,8 +239,7 @@ const runOne = async (id: string, kind: string) => {
   await clearQueue();
   const s3Was = { ...config.s3 };
   Object.assign(config.s3, { region: "x", bucket: "x", accessKeyId: "x", secretAccessKey: "x" });
-  const stage = (await prisma.stages.findFirst())!;
-  const cand = await prisma.candidates.create({ data: { first_name: "P5", stage_id: stage.id } });
+  const cand = await prisma.candidates.create({ data: { first_name: "P5" } });
   const r = await mk({ candidate_id: null, state: "synced", conflict: { on: "content" } });
   await trackDriveImport(cand.id, { drive_file_id: r.drive_file_id!, file_name: "cv.pdf", mime_type: PDF });
   Object.assign(config.s3, s3Was);

@@ -3,9 +3,11 @@
  * sees the same pipeline. Actions call the API, apply an optimistic update where it makes the UI feel instant,
  * then re-sync from the server. On failure they show an error toast and re-sync (which undoes the optimistic change).
  */
+import { useMemo } from "react";
 import { create } from "zustand";
 import type {
   ActivityEvent,
+  Application,
   BookingLink,
   Candidate,
   DriveInboxFile,
@@ -15,6 +17,7 @@ import type {
   InterviewType,
   Job,
   OrgSettings,
+  RejectionReason,
   Role,
   Source,
   Stage,
@@ -37,6 +40,8 @@ interface Data {
   sources: Source[];
   jobs: Job[];
   candidates: Candidate[];
+  applications: Application[];
+  rejectionReasons: RejectionReason[];
   interviews: Interview[];
   bookingLinks: BookingLink[];
   templates: EmailTemplate[];
@@ -51,7 +56,7 @@ interface Bootstrap extends Omit<Data, "currentUserId"> {
 }
 
 export interface NewInterviewInput {
-  candidateId: string;
+  applicationId: string;
   title: string;
   type: InterviewType;
   start: string;
@@ -68,12 +73,12 @@ interface Actions {
   toast: (message: string, tone?: Toast["tone"], action?: Toast["action"]) => void;
   dismissToast: (id: string) => void;
 
-  moveStage: (candidateIds: string[], stageId: string, opts?: { notify?: boolean }) => Promise<boolean>;
-  addNote: (candidateId: string, body: string) => Promise<boolean>;
-  setRating: (candidateId: string, rating: number) => Promise<boolean>;
-  toggleStar: (candidateId: string) => Promise<boolean>;
+  moveStage: (applicationIds: string[], stageId: string, opts?: { notify?: boolean; reasonId?: string; note?: string }) => Promise<boolean>;
+  addNote: (candidateId: string, body: string, applicationId?: string) => Promise<boolean>;
+  setRating: (applicationId: string, rating: number) => Promise<boolean>;
+  toggleStar: (applicationId: string) => Promise<boolean>;
   deleteCandidates: (ids: string[]) => Promise<boolean>;
-  resummarize: (candidateId: string) => Promise<boolean>;
+  resummarize: (applicationId: string) => Promise<boolean>;
   uploadResumes: (files: File[], jobId: string, sourceId: string) => Promise<{ created: string[]; rejected: string[] } | null>;
   replaceResume: (candidateId: string, file: File) => Promise<boolean>;
   renameResume: (candidateId: string, fileName: string) => Promise<boolean>;
@@ -135,6 +140,8 @@ const emptyData = (): Data => ({
   sources: [],
   jobs: [],
   candidates: [],
+  applications: [],
+  rejectionReasons: [],
   interviews: [],
   bookingLinks: [],
   templates: [],
@@ -200,7 +207,7 @@ export const useStore = create<Store>()((set, get) => {
       const tick = async () => {
         if (document.visibilityState === "visible" && get().status === "ready") await get().refresh();
         // Poll quickly while resumes are being parsed, otherwise every 20 seconds.
-        const pending = get().candidates.some((c) => c.summary.status === "pending");
+        const pending = get().candidates.some((c) => c.parseStatus === "pending");
         timer = setTimeout(tick, pending ? 3000 : 20000);
       };
       timer = setTimeout(tick, 20000);
@@ -226,30 +233,32 @@ export const useStore = create<Store>()((set, get) => {
 
     // ---------- candidates ----------
 
-    moveStage: (candidateIds, stageId, opts) => {
+    moveStage: (applicationIds, stageId, opts) => {
       const now = new Date().toISOString();
-      set((s) => ({ candidates: s.candidates.map((c) => (candidateIds.includes(c.id) && c.stageId !== stageId ? { ...c, stageId, stageEnteredAt: now } : c)) }));
-      return ok("Couldn't move candidate", () => api.post("/api/candidates/move", { ids: candidateIds, stageId, notify: !!opts?.notify }));
+      set((s) => ({ applications: s.applications.map((a) => (applicationIds.includes(a.id) && a.stageId !== stageId ? { ...a, stageId, stageEnteredAt: now, lastActivityAt: now } : a)) }));
+      return ok("Couldn't move candidate", () =>
+        api.post("/api/applications/move", { ids: applicationIds, stageId, notify: !!opts?.notify, reasonId: opts?.reasonId, note: opts?.note }),
+      );
     },
-    addNote: (candidateId, body) => {
-      const note = { id: tempId(), authorId: get().currentUserId ?? "", body, createdAt: new Date().toISOString() };
+    addNote: (candidateId, body, applicationId) => {
+      const note = { id: tempId(), authorId: get().currentUserId ?? "", body, createdAt: new Date().toISOString(), applicationId: applicationId ?? "" };
       set((s) => ({ candidates: s.candidates.map((c) => (c.id === candidateId ? { ...c, notes: [note, ...c.notes] } : c)) }));
-      return ok("Couldn't save note", () => api.post(`/api/candidates/${candidateId}/notes`, { body }));
+      return ok("Couldn't save note", () => api.post(`/api/candidates/${candidateId}/notes`, { body, applicationId: applicationId || null }));
     },
-    setRating: (candidateId, rating) => {
-      set((s) => ({ candidates: s.candidates.map((c) => (c.id === candidateId ? { ...c, rating } : c)) }));
-      return ok("Couldn't save rating", () => api.patch(`/api/candidates/${candidateId}`, { rating }));
+    setRating: (applicationId, rating) => {
+      set((s) => ({ applications: s.applications.map((a) => (a.id === applicationId ? { ...a, rating } : a)) }));
+      return ok("Couldn't save rating", () => api.patch(`/api/applications/${applicationId}`, { rating }));
     },
-    toggleStar: (candidateId) => {
-      const starred = !get().candidates.find((c) => c.id === candidateId)?.starred;
-      set((s) => ({ candidates: s.candidates.map((c) => (c.id === candidateId ? { ...c, starred } : c)) }));
-      return ok("Couldn't update star", () => api.patch(`/api/candidates/${candidateId}`, { starred }));
+    toggleStar: (applicationId) => {
+      const starred = !get().applications.find((a) => a.id === applicationId)?.starred;
+      set((s) => ({ applications: s.applications.map((a) => (a.id === applicationId ? { ...a, starred } : a)) }));
+      return ok("Couldn't update star", () => api.patch(`/api/applications/${applicationId}`, { starred }));
     },
     deleteCandidates: (ids) => {
-      set((s) => ({ candidates: s.candidates.filter((c) => !ids.includes(c.id)) }));
+      set((s) => ({ candidates: s.candidates.filter((c) => !ids.includes(c.id)), applications: s.applications.filter((a) => !ids.includes(a.candidateId)) }));
       return ok("Couldn't delete", () => api.post("/api/candidates/delete", { ids }));
     },
-    resummarize: (candidateId) => ok("Couldn't restart summary", () => api.post(`/api/candidates/${candidateId}/resummarize`)),
+    resummarize: (applicationId) => ok("Couldn't restart summary", () => api.post(`/api/applications/${applicationId}/resummarize`)),
 
     uploadResumes: (files, jobId, sourceId) =>
       run("Upload failed", () => {
@@ -394,4 +403,43 @@ export const useJobMap = () => {
 export const useTeamMap = () => {
   const team = useStore((s) => s.team);
   return Object.fromEntries(team.map((u) => [u.id, u])) as Record<string, TeamMember>;
+};
+
+export const useCandidateMap = () => {
+  const candidates = useStore((s) => s.candidates);
+  return useMemo(() => Object.fromEntries(candidates.map((c) => [c.id, c])) as Record<string, Candidate>, [candidates]);
+};
+
+/** One entry per application, joined with its person: what boards, review and funnels show. */
+export const useCards = () => {
+  const applications = useStore((s) => s.applications);
+  const candidates = useStore((s) => s.candidates);
+  return useMemo(() => {
+    const byId = new Map(candidates.map((c) => [c.id, c]));
+    return applications.flatMap((app) => {
+      const candidate = byId.get(app.candidateId);
+      return candidate ? [{ app, candidate }] : [];
+    });
+  }, [applications, candidates]);
+};
+
+export type Card = ReturnType<typeof useCards>[number];
+
+/** A person's applications, newest first. */
+export const useApplicationsOf = (candidateId: string | undefined) => {
+  const applications = useStore((s) => s.applications);
+  return useMemo(
+    () => applications.filter((a) => a.candidateId === candidateId).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.appliedAt.localeCompare(a.appliedAt)),
+    [applications, candidateId],
+  );
+};
+
+/** candidate id → the application they were most recently worked on for (same rule the server uses for manual emails). */
+export const useLatestAppMap = () => {
+  const applications = useStore((s) => s.applications);
+  return useMemo(() => {
+    const out: Record<string, Application> = {};
+    for (const a of applications) if (!out[a.candidateId] || a.lastActivityAt > out[a.candidateId]!.lastActivityAt) out[a.candidateId] = a;
+    return out;
+  }, [applications]);
 };

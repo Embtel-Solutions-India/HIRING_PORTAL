@@ -381,7 +381,7 @@ function EmailDomain() {
 function PipelineStages() {
   const stages = useStore((s) => s.stages);
   const templates = useStore((s) => s.templates);
-  const candidates = useStore((s) => s.candidates);
+  const applications = useStore((s) => s.applications);
   const setStages = useStore((s) => s.setStages);
   const toast = useStore((s) => s.toast);
   const [draft, setDraftRaw] = useState<Stage[]>(stages);
@@ -427,7 +427,7 @@ function PipelineStages() {
       </div>
       <ul className="divide-y divide-line">
         {draft.map((s, i) => {
-          const count = candidates.filter((c) => c.stageId === s.id).length;
+          const count = applications.filter((a) => a.stageId === s.id).length;
           return (
             <li key={s.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
               <span className="flex flex-col">

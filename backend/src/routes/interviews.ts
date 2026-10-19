@@ -6,7 +6,7 @@ import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.t
 import { busyFor, cancelInterview, createInterview } from "../scheduling.ts";
 
 const NewInterview = z.object({
-  candidateId: z.string().uuid(),
+  applicationId: z.string().uuid(),
   title: z.string().trim().min(1).max(120),
   type: z.enum(["phone", "video", "onsite"]),
   start: z.string().datetime({ offset: true }),
@@ -21,7 +21,7 @@ export default async function interviewRoutes(app: FastifyInstance) {
     const user = requirePerm(req, "interviews.schedule");
     const body = NewInterview.parse(req.body);
     const id = await createInterview({
-      candidateId: body.candidateId,
+      applicationId: body.applicationId,
       title: body.title,
       type: body.type,
       start: new Date(body.start),

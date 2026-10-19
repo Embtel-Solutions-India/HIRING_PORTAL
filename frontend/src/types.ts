@@ -91,6 +91,8 @@ export interface Note {
   authorId: string;
   body: string;
   createdAt: string;
+  /** The application (job) it was written under, "" for none. */
+  applicationId: string;
 }
 
 export interface Candidate {
@@ -102,22 +104,54 @@ export interface Candidate {
   location: string;
   currentTitle: string;
   currentCompany: string;
-  jobId: string;
-  stageId: string;
   /** Recruiting source id (see Source), "" when nobody has tagged it yet. */
   sourceId: string;
-  appliedAt: string;
-  stageEnteredAt: string;
-  ownerId: string;
-  rating: number; // 0-5
   tags: string[];
   skills: string[];
   resume: ResumeFile;
+  /** "pending" while the resume is being parsed. */
+  parseStatus: "pending" | "ready" | "failed";
   experience: Experience[];
   education: Education[];
-  summary: AiSummary;
   notes: Note[];
+  /** Older candidate this one looks like (same email/phone), "" when none. */
+  possibleDuplicateOf: string;
+  createdAt: string;
+}
+
+/** Why and by whom an application was closed: its latest move into a closed stage. */
+export interface Outcome {
+  reasonId: string;
+  reasonLabel: string;
+  fromStageId: string;
+  actorId: string;
+  note: string;
+  at: string;
+}
+
+/** One person's attempt at one job: its own stage, history, owner and AI match. */
+export interface Application {
+  id: string;
+  candidateId: string;
+  jobId: string;
+  stageId: string;
+  appliedAt: string;
+  stageEnteredAt: string;
+  /** Last meaningful update; boards sort by it, newest first. */
+  lastActivityAt: string;
+  ownerId: string;
+  rating: number; // 0-5
   starred: boolean;
+  summary: AiSummary;
+  outcome: Outcome | null;
+  createdAt: string;
+}
+
+export interface RejectionReason {
+  id: string;
+  label: string;
+  position: number;
+  active: boolean;
 }
 
 export type InterviewType = "phone" | "video" | "onsite";
@@ -125,6 +159,7 @@ export type InterviewType = "phone" | "video" | "onsite";
 export interface Interview {
   id: string;
   candidateId: string;
+  applicationId: string;
   jobId: string;
   title: string;
   type: InterviewType;

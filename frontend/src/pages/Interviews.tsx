@@ -351,7 +351,7 @@ function InterviewDetail({ id, onClose }: { id: string | null; onClose: () => vo
             <span className="min-w-0 flex-1">
               <span className="block font-semibold">{fullName(c)}</span>
               <span className="block truncate text-xs text-muted">
-                {c.currentTitle} · {jobMap[c.jobId]?.title}
+                {c.currentTitle} · {jobMap[iv.jobId]?.title}
               </span>
             </span>
             <ExternalLink size={15} className="text-muted" />

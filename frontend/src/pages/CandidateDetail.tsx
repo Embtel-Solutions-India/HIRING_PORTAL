@@ -7,13 +7,14 @@ import { ComposeEmailModal } from "../components/ComposeEmailModal";
 import { ScheduleInterviewModal } from "../components/ScheduleInterviewModal";
 import { Avatar, AvatarStack, Badge, Button, EmptyState, IconButton, Menu, MenuItem, StageBadge, Stars, Tabs } from "../components/ui";
 import { SourceBadge, SourcePicker } from "../components/SourcePicker";
-import { useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
+import { useApplicationsOf, useCan, useJobMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
 import { cn, daysSince, fmtDate, fmtDayLabel, fmtTime, fullName, timeAgo, resumeKeptNote } from "../lib/utils";
 
 export default function CandidateDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const candidates = useStore((s) => s.candidates);
+  const applications = useStore((s) => s.applications);
   const stages = useStore((s) => s.stages);
   const interviews = useStore((s) => s.interviews);
   const campaigns = useStore((s) => s.campaigns);
@@ -42,21 +43,23 @@ export default function CandidateDetail() {
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
   const c = candidates.find((x) => x.id === id);
-  const siblings = useMemo(() => (c ? candidates.filter((x) => x.jobId === c.jobId) : []), [candidates, c]);
+  // The newest application is the one this page acts on (the stepper, stage menu, rating and star).
+  const app = useApplicationsOf(id)[0];
+  const siblings = useMemo(() => (app ? applications.filter((a) => a.jobId === app.jobId).map((a) => a.candidateId) : []), [applications, app]);
 
-  if (!c) {
+  if (!c || !app) {
     return <EmptyState icon={<ArrowLeft size={18} />} title="Candidate not found" action={<Button onClick={() => navigate("/candidates")}>Back to candidates</Button>} />;
   }
 
-  const pos = siblings.findIndex((x) => x.id === c.id);
+  const pos = siblings.indexOf(c.id);
   const prev = siblings[pos - 1];
   const next = siblings[pos + 1];
   const myInterviews = interviews.filter((i) => i.candidateId === c.id);
   const myEmails = campaigns.filter((e) => e.recipientIds.includes(c.id));
   const myActivity = activity.filter((a) => a.candidateId === c.id);
   const stepStages = stages.filter((s) => s.kind !== "closed");
-  const currentIdx = stepStages.findIndex((s) => s.id === c.stageId);
-  const closed = stageMap[c.stageId]?.kind === "closed";
+  const currentIdx = stepStages.findIndex((s) => s.id === app.stageId);
+  const closed = stageMap[app.stageId]?.kind === "closed";
 
   return (
     <>
@@ -66,12 +69,12 @@ export default function CandidateDetail() {
         </Link>
         <div className="flex items-center gap-1 text-[12px] font-semibold text-muted">
           <span className="hidden sm:inline">
-            {pos + 1} of {siblings.length} in {jobMap[c.jobId]?.title}
+            {pos + 1} of {siblings.length} in {jobMap[app.jobId]?.title}
           </span>
-          <IconButton label="Previous candidate" disabled={!prev} onClick={() => prev && navigate(`/candidates/${prev.id}`)}>
+          <IconButton label="Previous candidate" disabled={!prev} onClick={() => prev && navigate(`/candidates/${prev}`)}>
             <ChevronLeft size={18} />
           </IconButton>
-          <IconButton label="Next candidate" disabled={!next} onClick={() => next && navigate(`/candidates/${next.id}`)}>
+          <IconButton label="Next candidate" disabled={!next} onClick={() => next && navigate(`/candidates/${next}`)}>
             <ChevronRight size={18} />
           </IconButton>
         </div>
@@ -84,10 +87,10 @@ export default function CandidateDetail() {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-[24px] leading-tight font-extrabold tracking-tight">{fullName(c)}</h1>
-              <button onClick={() => toggleStar(c.id)} aria-label={c.starred ? "Unstar" : "Star"} className="rounded p-0.5">
-                <Star size={18} className={c.starred ? "fill-amber-400 text-amber-400" : "text-line-strong hover:text-amber-400"} />
+              <button onClick={() => toggleStar(app.id)} aria-label={app.starred ? "Unstar" : "Star"} className="rounded p-0.5">
+                <Star size={18} className={app.starred ? "fill-amber-400 text-amber-400" : "text-line-strong hover:text-amber-400"} />
               </button>
-              <StageBadge stage={stageMap[c.stageId]} />
+              <StageBadge stage={stageMap[app.stageId]} />
               {canTag ? (
                 <SourcePicker variant="badge" value={c.sourceId} onChange={async (id) => (await setCandidateSource([c.id], id)) && toast(id ? `Source set to ${sourceMap[id]?.name ?? "new source"}` : "Source cleared")} />
               ) : (
@@ -95,7 +98,7 @@ export default function CandidateDetail() {
               )}
             </div>
             <p className="mt-0.5 text-sm text-muted">
-              {[c.currentTitle && `${c.currentTitle}${c.currentCompany ? ` at ${c.currentCompany}` : ""}`, jobMap[c.jobId] ? `applied for ${jobMap[c.jobId]!.title}` : "", `added ${timeAgo(c.appliedAt)}`]
+              {[c.currentTitle && `${c.currentTitle}${c.currentCompany ? ` at ${c.currentCompany}` : ""}`, jobMap[app.jobId] ? `applied for ${jobMap[app.jobId]!.title}` : "", `added ${timeAgo(app.appliedAt)}`]
                 .filter(Boolean)
                 .join(" · ")}
             </p>
@@ -103,11 +106,11 @@ export default function CandidateDetail() {
               <ContactRow candidate={c} />
             </div>
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
-              <Stars value={c.rating} onChange={canNote ? (v) => setRating(c.id, v) : undefined} size={16} />
+              <Stars value={app.rating} onChange={canNote ? (v) => setRating(app.id, v) : undefined} size={16} />
               {c.tags.map((t) => (
                 <Badge key={t}>{t}</Badge>
               ))}
-              {teamMap[c.ownerId] && <span className="text-xs text-muted">Owner: {teamMap[c.ownerId]!.name}</span>}
+              {teamMap[app.ownerId] && <span className="text-xs text-muted">Owner: {teamMap[app.ownerId]!.name}</span>}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -119,7 +122,7 @@ export default function CandidateDetail() {
             <Button icon={<CalendarPlus size={15} />} onClick={() => setScheduleOpen(true)}>
               Schedule
             </Button>
-            <MoveStageMenu candidateIds={[c.id]} currentStageId={c.stageId} align="right" />
+            <MoveStageMenu applicationIds={[app.id]} currentStageId={app.stageId} align="right" />
             {canDelete && (
               <Menu
                 align="right"
@@ -154,28 +157,28 @@ export default function CandidateDetail() {
         <ol className="scroll-slim mt-5 flex gap-1 overflow-x-auto pb-1">
           {stepStages.map((s, i) => {
             const reached = !closed && i <= currentIdx;
-            const isCurrent = s.id === c.stageId;
+            const isCurrent = s.id === app.stageId;
             return (
               <li key={s.id} className="min-w-[110px] flex-1">
                 <button
                   disabled={!canMove || isCurrent}
                   onClick={() => {
-                    const from = c.stageId;
-                    moveStage([c.id], s.id);
-                    toast(`Moved to ${s.name}`, "success", { label: "Undo", onClick: () => moveStage([c.id], from) });
+                    const from = app.stageId;
+                    moveStage([app.id], s.id);
+                    toast(`Moved to ${s.name}`, "success", { label: "Undo", onClick: () => moveStage([app.id], from) });
                   }}
                   className="group w-full text-left disabled:cursor-default"
                   title={isCurrent ? "Current stage" : `Move to ${s.name}`}
                 >
                   <span className={cn("block h-1.5 rounded-full transition", reached ? "" : "bg-sunken group-hover:bg-line-strong")} style={reached ? { background: s.color } : undefined} />
                   <span className={cn("mt-1.5 block truncate text-[12px] font-semibold", isCurrent ? "text-ink" : reached ? "text-ink-2" : "text-faint")}>{s.name}</span>
-                  {isCurrent && <span className="block text-[11px] text-muted">{daysSince(c.stageEnteredAt)} days in stage</span>}
+                  {isCurrent && <span className="block text-[11px] text-muted">{daysSince(app.stageEnteredAt)} days in stage</span>}
                 </button>
               </li>
             );
           })}
         </ol>
-        {closed && <p className="mt-2 text-[13px] font-semibold text-danger">Marked “{stageMap[c.stageId]?.name}” {timeAgo(c.stageEnteredAt)}</p>}
+        {closed && <p className="mt-2 text-[13px] font-semibold text-danger">Marked “{stageMap[app.stageId]?.name}” {timeAgo(app.stageEnteredAt)}</p>}
       </section>
 
       <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.2fr_1fr]">
@@ -184,7 +187,7 @@ export default function CandidateDetail() {
         </section>
 
         <div className="space-y-5">
-          <SummaryCard candidate={c} />
+          <SummaryCard candidate={c} app={app} />
 
           <section className="card">
             <Tabs
@@ -206,7 +209,7 @@ export default function CandidateDetail() {
                       onSubmit={(e) => {
                         e.preventDefault();
                         if (!note.trim()) return;
-                        addNote(c.id, note.trim());
+                        addNote(c.id, note.trim(), app.id);
                         setNote("");
                       }}
                     >
@@ -304,7 +307,7 @@ export default function CandidateDetail() {
                   <li className="relative text-[13px] text-ink-2">
                     <span className="absolute top-1.5 -left-[21px] size-2.5 rounded-full border-2 border-surface bg-brand-500" />
                     Added to the ATS{sourceMap[c.sourceId] ? ` · source: ${sourceMap[c.sourceId]!.name}` : ""}
-                    <span className="block text-[11px] text-faint">{fmtDate(c.appliedAt)}</span>
+                    <span className="block text-[11px] text-faint">{fmtDate(c.createdAt)}</span>
                   </li>
                 </ol>
               )}
@@ -314,7 +317,7 @@ export default function CandidateDetail() {
       </div>
 
       <ComposeEmailModal open={emailOpen} onClose={() => setEmailOpen(false)} recipientIds={[c.id]} />
-      <ScheduleInterviewModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} candidateId={c.id} />
+      <ScheduleInterviewModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} candidateId={c.id} applicationId={app.id} />
     </>
   );
 }
