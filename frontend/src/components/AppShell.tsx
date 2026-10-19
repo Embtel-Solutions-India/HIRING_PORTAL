@@ -20,6 +20,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useCurrentUser, useJobMap, useLatestAppMap, useSourceMap, useStageMap, useStore } from "../data/store";
 import { can, ROLE_LABEL, type Permission } from "../lib/permissions";
 import { cn, fullName } from "../lib/utils";
+import { RejectDialog } from "./RejectDialog";
 import { Avatar, Badge, Logo, Menu, MenuItem, StageBadge, Toaster } from "./ui";
 
 interface NavItem {
@@ -123,6 +124,7 @@ export function AppShell() {
         )}
       </AnimatePresence>
       <Toaster />
+      <RejectDialog />
     </div>
   );
 }

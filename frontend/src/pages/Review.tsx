@@ -35,6 +35,7 @@ export default function Review() {
   const jobs = useStore((s) => s.jobs);
   const interviews = useStore((s) => s.interviews);
   const moveStage = useStore((s) => s.moveStage);
+  const requestMove = useStore((s) => s.requestMove);
   const toggleStar = useStore((s) => s.toggleStar);
   const setRating = useStore((s) => s.setRating);
   const addNote = useStore((s) => s.addNote);
@@ -133,15 +134,16 @@ export default function Review() {
   };
   const rejectStage = stages.find((s) => s.kind === "closed");
 
-  const decide = (kind: "advance" | "reject") => {
+  const decide = async (kind: "advance" | "reject") => {
     if (!current || !canMove) return;
     const target = kind === "advance" ? nextStageFor(current) : rejectStage;
     if (!target || target.id === current.app.stageId) return go(1);
     const from = current.app.stageId;
     const id = current.app.id;
-    void moveStage([id], target.id, { notify: notify && canEmail });
+    const name = current.candidate.firstName;
+    if (!(await requestMove([id], target.id, { notify: notify && canEmail }))) return;
     setDecisions((d) => ({ ...d, [id]: target.id }));
-    toast(`${current.candidate.firstName} → ${target.name}`, "success", {
+    toast(`${name} → ${target.name}`, "success", {
       label: "Undo",
       onClick: () => {
         void moveStage([id], from);
@@ -172,8 +174,8 @@ export default function Review() {
     } else if (key === "Home") {
       e.preventDefault();
       jump(0);
-    } else if (key.toLowerCase() === "a" && canMove) decide("advance");
-    else if (key.toLowerCase() === "r" && canMove) decide("reject");
+    } else if (key.toLowerCase() === "a" && canMove) void decide("advance");
+    else if (key.toLowerCase() === "r" && canMove) void decide("reject");
     else if (key.toLowerCase() === "s" && current && canNote) void toggleStar(current.app.id);
     else if (key.toLowerCase() === "f" && current && !canMove) {
       const iv = myNextInterview(current.app.id);

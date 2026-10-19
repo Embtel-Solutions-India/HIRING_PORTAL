@@ -312,6 +312,7 @@ export function MoveStageMenu({
 }) {
   const stages = useStore((s) => s.stages);
   const moveStage = useStore((s) => s.moveStage);
+  const requestMove = useStore((s) => s.requestMove);
   const toast = useStore((s) => s.toast);
   const allowed = useCan("candidates.moveStage");
   const canEmail = useCan("emails.sendSingle");
@@ -332,16 +333,16 @@ export function MoveStageMenu({
             <MenuItem
               key={st.id}
               active={st.id === currentStageId}
-              onClick={() => {
+              onClick={async () => {
                 const prev = currentStageId;
-                moveStage(applicationIds, st.id, { notify: notify && canEmail });
+                close();
+                if (!(await requestMove(applicationIds, st.id, { notify: notify && canEmail }))) return;
                 toast(
                   `${applicationIds.length > 1 ? `${applicationIds.length} candidates` : "Candidate"} moved to ${st.name}${notify && canEmail && st.autoEmailTemplateId ? " · email sent" : ""}`,
                   "success",
                   prev && applicationIds.length === 1 ? { label: "Undo", onClick: () => moveStage(applicationIds, prev) } : undefined,
                 );
                 onMoved?.(st.id);
-                close();
               }}
               icon={<span className="size-2.5 rounded-full" style={{ background: st.color }} />}
             >

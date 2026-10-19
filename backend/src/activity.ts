@@ -12,7 +12,9 @@ export type ActivityType =
   | "user_deleted"
   | "settings_changed"
   | "candidate_created"
-  | "source_changed";
+  | "source_changed"
+  | "candidate_updated"
+  | "interview_feedback";
 
 export async function logActivity(actorId: string | null, type: ActivityType, message: string, candidateId?: string | null) {
   await prisma.activity.create({ data: { actor_id: actorId, type, message, candidate_id: candidateId ?? null } });

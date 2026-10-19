@@ -6,7 +6,7 @@ import type { Role } from "../../../frontend/src/types.ts";
 import { logActivity } from "../activity.ts";
 import { config } from "../config.ts";
 import { prisma } from "../db.ts";
-import { latestApplicationIds } from "../applications.ts";
+import { latestApplicationIds, saveRejectionReasons } from "../applications.ts";
 import { moveRootFolder } from "../drive.ts";
 import { createCampaign, sendSystemEmail } from "../email.ts";
 import { isConnected } from "../google.ts";
@@ -298,6 +298,19 @@ export default async function adminRoutes(app: FastifyInstance) {
       }
     }
     await logActivity(user.id, "settings_changed", `updated ${Object.keys(body).join(", ")} settings`);
+    return { ok: true };
+  });
+
+  app.put("/api/settings/rejection-reasons", async (req) => {
+    const user = requirePerm(req, "settings.pipeline");
+    const list = z
+      .array(z.object({ id: z.string().max(64).optional(), label: z.string().trim().min(1).max(60), active: z.boolean() }))
+      .min(1)
+      .max(50)
+      .parse(req.body);
+    if (!list.some((r) => r.active)) throw new HttpError(400, "Keep at least one reason turned on");
+    await saveRejectionReasons(list);
+    await logActivity(user.id, "settings_changed", "updated the rejection reasons");
     return { ok: true };
   });
 

@@ -74,6 +74,9 @@ interface Actions {
   dismissToast: (id: string) => void;
 
   moveStage: (applicationIds: string[], stageId: string, opts?: { notify?: boolean; reasonId?: string; note?: string }) => Promise<boolean>;
+  /** Moves cards; a closed target stage first asks for a reason. Resolves false if the user cancels. */
+  requestMove: (applicationIds: string[], stageId: string, opts?: { notify?: boolean }) => Promise<boolean>;
+  resolveRejectPrompt: (choice: { reasonId: string; note: string } | null) => void;
   addNote: (candidateId: string, body: string, applicationId?: string) => Promise<boolean>;
   setRating: (applicationId: string, rating: number) => Promise<boolean>;
   toggleStar: (applicationId: string) => Promise<boolean>;
@@ -113,13 +116,22 @@ interface Actions {
   deleteUser: (id: string) => Promise<boolean>;
 
   setStages: (stages: Stage[]) => Promise<boolean>;
+  saveRejectionReasons: (reasons: { id?: string; label: string; active: boolean }[]) => Promise<boolean>;
   updateSettings: (patch: Partial<Omit<OrgSettings, "google" | "dnsRecords" | "system">> & { google?: Partial<OrgSettings["google"]> }) => Promise<boolean>;
   disconnectGoogle: () => Promise<boolean>;
   verifyEmailDomain: () => Promise<boolean>;
   sendTestEmail: () => Promise<boolean>;
 }
 
-export type Store = Data & Actions & { status: "loading" | "anonymous" | "ready"; toasts: Toast[] };
+/** Open while the user picks a reason for moving cards into a closed stage. */
+export interface RejectPrompt {
+  applicationIds: string[];
+  stageId: string;
+  notify: boolean;
+  resolve: (moved: boolean) => void;
+}
+
+export type Store = Data & Actions & { status: "loading" | "anonymous" | "ready"; toasts: Toast[]; rejectPrompt: RejectPrompt | null };
 
 const emptySettings: OrgSettings = {
   orgName: "",
@@ -178,6 +190,7 @@ export const useStore = create<Store>()((set, get) => {
     ...emptyData(),
     status: "loading",
     toasts: [],
+    rejectPrompt: null,
 
     init: async () => {
       try {
@@ -240,9 +253,26 @@ export const useStore = create<Store>()((set, get) => {
         api.post("/api/applications/move", { ids: applicationIds, stageId, notify: !!opts?.notify, reasonId: opts?.reasonId, note: opts?.note }),
       );
     },
+    requestMove: (applicationIds, stageId, opts) => {
+      if (get().stages.find((s) => s.id === stageId)?.kind !== "closed") return get().moveStage(applicationIds, stageId, opts);
+      get().rejectPrompt?.resolve(false);
+      return new Promise((resolve) => set({ rejectPrompt: { applicationIds, stageId, notify: !!opts?.notify, resolve } }));
+    },
+    resolveRejectPrompt: (choice) => {
+      const p = get().rejectPrompt;
+      if (!p) return;
+      set({ rejectPrompt: null });
+      if (!choice) return p.resolve(false);
+      void get()
+        .moveStage(p.applicationIds, p.stageId, { notify: p.notify, reasonId: choice.reasonId, note: choice.note })
+        .then(p.resolve);
+    },
     addNote: (candidateId, body, applicationId) => {
       const note = { id: tempId(), authorId: get().currentUserId ?? "", body, createdAt: new Date().toISOString(), applicationId: applicationId ?? "" };
-      set((s) => ({ candidates: s.candidates.map((c) => (c.id === candidateId ? { ...c, notes: [note, ...c.notes] } : c)) }));
+      set((s) => ({
+        candidates: s.candidates.map((c) => (c.id === candidateId ? { ...c, notes: [note, ...c.notes] } : c)),
+        applications: s.applications.map((a) => (applicationId ? a.id === applicationId : a.candidateId === candidateId) ? { ...a, lastActivityAt: note.createdAt } : a),
+      }));
       return ok("Couldn't save note", () => api.post(`/api/candidates/${candidateId}/notes`, { body, applicationId: applicationId || null }));
     },
     setRating: (applicationId, rating) => {
@@ -365,6 +395,7 @@ export const useStore = create<Store>()((set, get) => {
       set({ stages });
       return ok("Couldn't save stages", () => api.put("/api/settings/stages", stages));
     },
+    saveRejectionReasons: (reasons) => ok("Couldn't save reasons", () => api.put("/api/settings/rejection-reasons", reasons)),
     updateSettings: (patch) => ok("Couldn't save settings", () => api.patch("/api/settings", patch)),
     disconnectGoogle: () => ok("Couldn't disconnect", () => api.post("/api/integrations/google/disconnect")),
     verifyEmailDomain: () => ok("Verification failed", () => api.post("/api/settings/email/verify")),

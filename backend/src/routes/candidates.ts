@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ResumeFile } from "../../../frontend/src/types.ts";
-import { logActivity } from "../activity.ts";
+import { logActivity, touchCandidate } from "../activity.ts";
+import { addNote } from "../applications.ts";
 import { prisma } from "../db.ts";
 import { config } from "../config.ts";
 import * as google from "../google.ts";
@@ -44,6 +45,14 @@ export default async function candidateRoutes(app: FastifyInstance) {
     };
     if (Object.values(data).every((v) => v === undefined)) return { ok: true };
     await prisma.candidates.updateMany({ where: { id }, data });
+    // Tags are bookkeeping; name and contact changes count as work on the person's open applications.
+    const fields = (["firstName", "lastName", "email", "phone", "location"] as const).filter((k) => body[k] !== undefined);
+    if (fields.length) {
+      await touchCandidate(id);
+      const c = await prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } });
+      const label = fields.map((f) => (f === "firstName" || f === "lastName" ? "name" : f)).filter((f, i, all) => all.indexOf(f) === i);
+      await logActivity(user.id, "candidate_updated", `updated the ${label.join(", ")} on ${fullName(c!)}`, id);
+    }
     return { ok: true };
   });
 
@@ -54,8 +63,7 @@ export default async function candidateRoutes(app: FastifyInstance) {
     await assertCandidateAccess(user, id);
     const { body, applicationId } = z.object({ body: z.string().trim().min(1).max(5000), applicationId: z.string().uuid().nullish() }).parse(req.body);
     const c = await prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } });
-    if (applicationId && !(await prisma.applications.findFirst({ where: { id: applicationId, candidate_id: id }, select: { id: true } }))) throw new HttpError(400, "That application belongs to someone else");
-    await prisma.notes.create({ data: { candidate_id: id, application_id: applicationId ?? null, author_id: user.id, body } });
+    await addNote({ candidateId: id, applicationId, body, actorId: user.id });
     await logActivity(user.id, "note", `added a note on ${fullName(c!)}`, id);
     return { ok: true };
   });
@@ -189,6 +197,7 @@ export default async function candidateRoutes(app: FastifyInstance) {
     });
     if (key !== row.s3_key) await s3.remove(row.s3_key!).catch((e) => console.warn("[resume] couldn't remove old key", e));
     enqueueParse(id);
+    await touchCandidate(id);
     await logActivity(user.id, "resume_upload", `replaced the resume with ${part.filename}`, id);
     return { ok: true };
   });
@@ -203,6 +212,7 @@ export default async function candidateRoutes(app: FastifyInstance) {
     if (fileName === row.file_name) return { ok: true };
     await renameInS3(row, fileName);
     await enqueue(row.id, "rename_drive", { name: fileName });
+    await touchCandidate(id);
     await logActivity(user.id, "resume_upload", `renamed the resume to ${fileName}`, id);
     return { ok: true };
   });

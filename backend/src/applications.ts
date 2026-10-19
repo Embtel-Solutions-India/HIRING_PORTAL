@@ -2,7 +2,7 @@
  * Applications: one person's attempt at one job, with its own stage and an insert-only stage history.
  * An application is "open" while its stage is an active one (hired and closed are finished).
  */
-import { logActivity } from "./activity.ts";
+import { logActivity, touch, touchCandidate } from "./activity.ts";
 import { prisma } from "./db.ts";
 import { HttpError } from "./http.ts";
 import type { Db } from "./sync-queue.ts";
@@ -65,4 +65,50 @@ export async function latestApplicationIds(candidateIds: string[]): Promise<Map<
 export async function newestOpenApplication(candidateId: string): Promise<{ id: string; jobId: string | null } | null> {
   const a = await prisma.applications.findFirst({ where: { candidate_id: candidateId, stages: { kind: "active" } }, orderBy: { created_at: "desc" }, select: { id: true, job_id: true } });
   return a ? { id: a.id, jobId: a.job_id } : null;
+}
+
+const slug = (label: string) => label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 48) || "reason";
+
+/**
+ * Replaces the rejection reason list (order = position). New labels get a slug id. A reason left out is deleted,
+ * unless some history row used it: then it's only retired (inactive), so old records keep pointing at it.
+ */
+export async function saveRejectionReasons(list: { id?: string; label: string; active: boolean }[]) {
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.rejection_reasons.findMany({ select: { id: true } });
+    const taken = new Set(existing.map((r) => r.id));
+    const keep = new Set<string>();
+    for (const [position, r] of list.entries()) {
+      let id = r.id && taken.has(r.id) ? r.id : slug(r.label);
+      if (!r.id || !taken.has(r.id)) for (let n = 2; taken.has(id); n++) id = `${slug(r.label)}_${n}`;
+      taken.add(id);
+      keep.add(id);
+      await tx.rejection_reasons.upsert({ where: { id }, create: { id, label: r.label, active: r.active, position }, update: { label: r.label, active: r.active, position } });
+    }
+    const dropped = existing.map((r) => r.id).filter((id) => !keep.has(id));
+    const used = new Set((await tx.stage_transitions.findMany({ where: { reason_id: { in: dropped } }, distinct: ["reason_id"], select: { reason_id: true } })).map((t) => t.reason_id!));
+    await tx.rejection_reasons.updateMany({ where: { id: { in: [...used] } }, data: { active: false } });
+    await tx.rejection_reasons.deleteMany({ where: { id: { in: dropped.filter((id) => !used.has(id)) } } });
+  });
+}
+
+/** Adds a note to a person, optionally written under one of their applications (which then moves to the top). */
+export async function addNote(input: { candidateId: string; applicationId?: string | null; body: string; actorId: string | null }) {
+  if (input.applicationId && !(await prisma.applications.findFirst({ where: { id: input.applicationId, candidate_id: input.candidateId }, select: { id: true } })))
+    throw new HttpError(400, "That application belongs to someone else");
+  await prisma.notes.create({ data: { candidate_id: input.candidateId, application_id: input.applicationId ?? null, author_id: input.actorId, body: input.body } });
+  if (input.applicationId) await touch([input.applicationId]);
+  else await touchCandidate(input.candidateId);
+}
+
+/** Owner and job changes count as work on the application; rating and starring don't move the card. */
+export async function updateApplication(id: string, patch: { rating?: number; starred?: boolean; ownerId?: string | null; jobId?: string | null }, actorId: string | null) {
+  const data = { rating: patch.rating, starred: patch.starred, owner_id: patch.ownerId, job_id: patch.jobId };
+  if (Object.values(data).every((v) => v === undefined)) return;
+  const meaningful = patch.ownerId !== undefined || patch.jobId !== undefined;
+  await prisma.applications.updateMany({ where: { id }, data: meaningful ? { ...data, last_activity_at: new Date() } : data });
+  if (meaningful) {
+    const a = await prisma.applications.findUnique({ where: { id }, select: { candidate_id: true, candidates: { select: { first_name: true, last_name: true } } } });
+    if (a) await logActivity(actorId, "candidate_updated", `updated the ${[patch.ownerId !== undefined && "owner", patch.jobId !== undefined && "job"].filter(Boolean).join(" and ")} for ${fullName(a.candidates)}`, a.candidate_id);
+  }
 }

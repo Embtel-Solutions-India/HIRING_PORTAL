@@ -225,7 +225,9 @@ export interface ActivityEvent {
     | "user_deleted"
     | "settings_changed"
     | "candidate_created"
-    | "source_changed";
+    | "source_changed"
+    | "candidate_updated"
+    | "interview_feedback";
   candidateId?: string;
   message: string;
   createdAt: string;

@@ -1,5 +1,5 @@
 /** Interviews ↔ Google Calendar, free/busy, and time-zone math for booking links. */
-import { logActivity } from "./activity.ts";
+import { logActivity, touch } from "./activity.ts";
 import { config } from "./config.ts";
 import { prisma } from "./db.ts";
 import { createCampaign } from "./email.ts";
@@ -86,6 +86,7 @@ export async function createInterview(input: NewInterview) {
       if (calendarEventId) await google.cancelEvent(calendarEventId).catch(() => {});
       throw e;
     });
+  await touch([app.id]);
   await logActivity(input.actorId, "interview_scheduled", `${input.bookedVia ? "booked" : "scheduled"} ${input.title.toLowerCase()} with ${name}`, c.id);
 
   // Without Google Calendar the candidate still gets a confirmation email.

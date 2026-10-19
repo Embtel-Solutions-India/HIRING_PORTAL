@@ -1,7 +1,7 @@
 // Run against a local database: DATABASE_URL=postgres://postgres:postgres@localhost:5433/hirely npm run check:applications-db
 // Database-level checks of applications, stage history, rejection reasons, reapply and merge.
 import assert from "node:assert/strict";
-import { createApplication, moveApplications } from "../src/applications.ts";
+import { addNote, createApplication, moveApplications, saveRejectionReasons, updateApplication } from "../src/applications.ts";
 import { prisma } from "../src/db.ts";
 import { createCandidate } from "../src/pipeline.ts";
 
@@ -64,6 +64,44 @@ assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: appId }
   assert.equal(await prisma.stage_transitions.count({ where: { application_id: appId } }), 4, "A4: no new row");
   await assert.rejects(moveApplications({ ids: [appId], stageId: "no-such-stage", actorId: null }), /Unknown stage/, "A4: unknown stage");
   console.log("A4 ok");
+}
+
+// R1 (Review Focus 4): a used reason is retired, not deleted; history keeps its label; it can't be picked again
+{
+  const seed = await prisma.rejection_reasons.findMany({ orderBy: { position: "asc" } });
+  await moveApplications({ ids: [appId], stageId: closed, actorId: null, reasonId: "salary" });
+  await saveRejectionReasons(seed.filter((r) => r.id !== "salary").map((r) => ({ id: r.id, label: r.label, active: r.active })));
+  const salary = await prisma.rejection_reasons.findUnique({ where: { id: "salary" } });
+  assert.equal(salary?.active, false, "R1: used reason retired, not deleted");
+  assert.ok(await prisma.stage_transitions.findFirst({ where: { application_id: appId, reason_label: "Salary expectations" } }), "R1: label snapshot kept");
+  await moveApplications({ ids: [appId], stageId: active2, actorId: null });
+  await assert.rejects(moveApplications({ ids: [appId], stageId: closed, actorId: null, reasonId: "salary" }), /Pick a reason/, "R1: retired reason can't be picked");
+  // A new label gets a slug id; an unused reason left out of the list is deleted.
+  await saveRejectionReasons([...seed.filter((r) => r.id !== "salary").map((r) => ({ id: r.id, label: r.label, active: r.active })), { label: "Failed take-home test", active: true }]);
+  const added = await prisma.rejection_reasons.findFirst({ where: { label: "Failed take-home test" } });
+  assert.equal(added?.id, "failed_take_home_test", "R1: slug id");
+  await saveRejectionReasons(seed.map((r) => ({ id: r.id, label: r.label, active: true })));
+  assert.equal(await prisma.rejection_reasons.count({ where: { id: "failed_take_home_test" } }), 0, "R1: unused reason removed");
+  assert.equal((await prisma.rejection_reasons.findUnique({ where: { id: "salary" } }))?.active, true, "R1: restored");
+  console.log("R1 ok");
+}
+
+// T1: notes and owner changes bring a card to the top; starring and rating don't
+{
+  const lastActivity = async () => (await prisma.applications.findUniqueOrThrow({ where: { id: appId } })).last_activity_at.getTime();
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const t0 = await lastActivity();
+  await tick();
+  await addNote({ candidateId: personId, applicationId: appId, body: "x", actorId: null });
+  const t1 = await lastActivity();
+  assert.ok(t1 > t0, "T1: note touches");
+  await tick();
+  await updateApplication(appId, { starred: true, rating: 4 }, null);
+  assert.equal(await lastActivity(), t1, "T1: star/rating don't touch");
+  await updateApplication(appId, { ownerId: null }, null);
+  assert.ok((await lastActivity()) > t1, "T1: owner change touches");
+  await assert.rejects(addNote({ candidateId: personId, applicationId: "00000000-0000-0000-0000-000000000000", body: "x", actorId: null }), /someone else/, "T1: foreign application");
+  console.log("T1 ok");
 }
 
 // S1: createCandidate makes the person plus one open application with an entry transition

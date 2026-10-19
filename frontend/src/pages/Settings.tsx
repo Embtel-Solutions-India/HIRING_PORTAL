@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, CircleAlert, CircleCheck, Copy, FolderOpen, Plus, RefreshCw, Send, Server, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Avatar, Badge, Button, CalendarMark, DriveMark, Field, GoogleMark, PageHeader, Select, Tabs, Toggle } from "../components/ui";
+import { Avatar, Badge, Button, CalendarMark, DriveMark, Field, GoogleMark, IconButton, PageHeader, Select, Tabs, Toggle } from "../components/ui";
 import { SOURCE_COLORS } from "../components/SourcePicker";
 import { useCan, useCurrentUser, useStore, useTeamMap } from "../data/store";
 import type { ActivityEvent, Stage } from "../types";
@@ -57,7 +57,12 @@ export default function Settings() {
       {tab === "integrations" && <Integrations />}
       {tab === "sources" && <SourcesSettings />}
       {tab === "email" && <EmailDomain />}
-      {tab === "pipeline" && <PipelineStages />}
+      {tab === "pipeline" && (
+        <div className="space-y-5">
+          <PipelineStages />
+          <RejectionReasons />
+        </div>
+      )}
       {tab === "audit" && <AuditLog />}
       {tab === "sync" && <ResumeSync />}
     </>
@@ -378,6 +383,59 @@ function EmailDomain() {
   );
 }
 
+/** The reasons offered whenever someone moves a candidate to a closed stage. Used reasons can only be turned off. */
+function RejectionReasons() {
+  const reasons = useStore((s) => s.rejectionReasons);
+  const save = useStore((s) => s.saveRejectionReasons);
+  const toast = useStore((s) => s.toast);
+  const [draft, setDraft] = useState(reasons.map((r) => ({ id: r.id as string | undefined, label: r.label, active: r.active })));
+  const [edited, setEdited] = useState(false);
+  useEffect(() => {
+    if (!edited) setDraft(reasons.map((r) => ({ id: r.id, label: r.label, active: r.active })));
+  }, [reasons, edited]);
+  const change = (next: typeof draft) => {
+    setDraft(next);
+    setEdited(true);
+  };
+  return (
+    <section className="card">
+      <div className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4">
+        <div className="flex-1">
+          <h2 className="font-bold">Rejection reasons</h2>
+          <p className="text-[13px] text-muted">Asked every time a candidate moves to a closed stage. Reasons already used stay in history; removing one just turns it off.</p>
+        </div>
+        <Button icon={<Plus size={15} />} onClick={() => change([...draft, { id: undefined, label: "New reason", active: true }])}>
+          Add reason
+        </Button>
+        <Button
+          variant="primary"
+          disabled={!edited || draft.some((r) => !r.label.trim()) || !draft.some((r) => r.active)}
+          onClick={async () => {
+            if (await save(draft.map((r) => ({ ...r, label: r.label.trim() })))) {
+              setEdited(false);
+              toast("Reasons saved");
+            }
+          }}
+        >
+          Save changes
+        </Button>
+      </div>
+      <ul className="divide-y divide-line">
+        {draft.map((r, i) => (
+          <li key={r.id ?? `new-${i}`} className="flex items-center gap-3 px-5 py-2.5">
+            <span className="tabular w-5 text-[12px] font-semibold text-faint">{i + 1}</span>
+            <input className="field h-9 flex-1" maxLength={60} value={r.label} onChange={(e) => change(draft.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} aria-label={`Reason ${i + 1}`} />
+            <Toggle checked={r.active} onChange={(v) => change(draft.map((x, j) => (j === i ? { ...x, active: v } : x)))} label={`Offer “${r.label}”`} />
+            <IconButton label={`Remove ${r.label}`} onClick={() => change(draft.filter((_, j) => j !== i))}>
+              <Trash2 size={15} />
+            </IconButton>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function PipelineStages() {
   const stages = useStore((s) => s.stages);
   const templates = useStore((s) => s.templates);
@@ -662,6 +720,8 @@ const AUDIT_TYPES: { value: ActivityEvent["type"] | "all"; label: string }[] = [
   { value: "stage_change", label: "Stage changes" },
   { value: "email_sent", label: "Emails" },
   { value: "interview_scheduled", label: "Interviews" },
+  { value: "interview_feedback", label: "Interview feedback" },
+  { value: "candidate_updated", label: "Profile edits" },
   { value: "resume_upload", label: "Resumes" },
   { value: "user_invited", label: "Invites" },
   { value: "role_changed", label: "Role changes" },

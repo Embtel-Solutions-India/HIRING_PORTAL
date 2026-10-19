@@ -1,5 +1,5 @@
 import { parseISO } from "date-fns";
-import { ArrowLeft, CalendarPlus, ChevronLeft, ChevronRight, Mail, MapPin, MoreHorizontal, Phone, Star, Trash2, Video } from "lucide-react";
+import { ArrowLeft, CalendarPlus, ChevronLeft, ChevronRight, Mail, MapPin, MoreHorizontal, Phone, Star, Trash2, Video, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ContactRow, MoveStageMenu, ResumePreview, SummaryCard } from "../components/candidate";
@@ -23,6 +23,7 @@ export default function CandidateDetail() {
   const setRating = useStore((s) => s.setRating);
   const toggleStar = useStore((s) => s.toggleStar);
   const moveStage = useStore((s) => s.moveStage);
+  const requestMove = useStore((s) => s.requestMove);
   const deleteCandidates = useStore((s) => s.deleteCandidates);
   const settings = useStore((s) => s.settings);
   const toast = useStore((s) => s.toast);
@@ -60,6 +61,7 @@ export default function CandidateDetail() {
   const stepStages = stages.filter((s) => s.kind !== "closed");
   const currentIdx = stepStages.findIndex((s) => s.id === app.stageId);
   const closed = stageMap[app.stageId]?.kind === "closed";
+  const closedStage = stages.find((s) => s.kind === "closed");
 
   return (
     <>
@@ -122,6 +124,15 @@ export default function CandidateDetail() {
             <Button icon={<CalendarPlus size={15} />} onClick={() => setScheduleOpen(true)}>
               Schedule
             </Button>
+            {canMove && !closed && closedStage && (
+              <Button
+                className="text-danger"
+                icon={<XCircle size={15} />}
+                onClick={async () => (await requestMove([app.id], closedStage.id)) && toast(`Marked “${closedStage.name}”`, "info", { label: "Undo", onClick: () => moveStage([app.id], app.stageId) })}
+              >
+                Reject
+              </Button>
+            )}
             <MoveStageMenu applicationIds={[app.id]} currentStageId={app.stageId} align="right" />
             {canDelete && (
               <Menu

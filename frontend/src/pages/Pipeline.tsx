@@ -27,6 +27,7 @@ export default function Pipeline() {
   const team = useStore((s) => s.team);
   const interviews = useStore((s) => s.interviews);
   const moveStage = useStore((s) => s.moveStage);
+  const requestMove = useStore((s) => s.requestMove);
   const toast = useStore((s) => s.toast);
   const canMove = useCan("candidates.moveStage");
   const canEmail = useCan("emails.sendSingle");
@@ -82,7 +83,7 @@ export default function Pipeline() {
   const active = activeId ? cards.find((c) => c.app.id === activeId) : null;
 
   const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
-  const onDragEnd = (e: DragEndEvent) => {
+  const onDragEnd = async (e: DragEndEvent) => {
     setActiveId(null);
     const id = String(e.active.id);
     const to = e.over?.id ? String(e.over.id) : null;
@@ -90,7 +91,8 @@ export default function Pipeline() {
     if (!card || !to || to === card.app.stageId) return;
     const from = card.app.stageId;
     const stage = stages.find((s) => s.id === to)!;
-    moveStage([id], to, { notify: notify && canEmail });
+    // A closed stage asks for a reason first; cancelling leaves the card where it was.
+    if (!(await requestMove([id], to, { notify: notify && canEmail }))) return;
     toast(`${fullName(card.candidate)} → ${stage.name}${notify && canEmail && stage.autoEmailTemplateId ? " · email sent" : ""}`, "success", {
       label: "Undo",
       onClick: () => moveStage([id], from),
@@ -187,7 +189,8 @@ function Column({
   ref: (el: HTMLDivElement | null) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
-  const sorted = [...items].sort((a, b) => Number(b.app.starred) - Number(a.app.starred) || b.app.summary.matchScore - a.app.summary.matchScore);
+  // Most recently worked-on first; starred and match score stay visible on the card but don't reorder it.
+  const sorted = [...items].sort((a, b) => b.app.lastActivityAt.localeCompare(a.app.lastActivityAt));
   return (
     <div ref={ref} className="flex w-[288px] shrink-0 snap-start flex-col">
       <div className="mb-2 flex items-center gap-2 px-1">

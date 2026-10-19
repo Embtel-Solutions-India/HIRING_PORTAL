@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { can } from "../../../frontend/src/lib/permissions.ts";
-import { moveApplications } from "../applications.ts";
+import { moveApplications, updateApplication } from "../applications.ts";
 import { prisma } from "../db.ts";
 import { createCampaign } from "../email.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
@@ -45,9 +45,7 @@ export default async function applicationRoutes(app: FastifyInstance) {
     const user = "ownerId" in body || "jobId" in body ? requirePerm(req, "candidates.edit") : requirePerm(req, "candidates.addNote");
     const a = await loadApplication((req.params as { id: string }).id);
     await assertCandidateAccess(user, a.candidate_id);
-    const data = { rating: body.rating, starred: body.starred, owner_id: body.ownerId, job_id: body.jobId };
-    if (Object.values(data).every((v) => v === undefined)) return { ok: true };
-    await prisma.applications.updateMany({ where: { id: a.id }, data });
+    await updateApplication(a.id, body, user.id);
     return { ok: true };
   });
 
