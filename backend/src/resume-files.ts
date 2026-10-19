@@ -45,6 +45,21 @@ export const graceDate = () => new Date(Date.now() + config.resumeDeleteGraceDay
 /** The state a resume returns to when its deletion is cancelled: an unresolved conflict comes back. */
 export const undeletedState = (row: { conflict: unknown }) => (row.conflict ? "conflict" : "synced");
 
+/**
+ * Moves a Drive file into a folder. A move bumps the file's Drive version; when the file is a tracked resume that was
+ * unchanged since our last sync, the new version is recorded so the change feed doesn't take the move for an edit.
+ * If it had changed (e.g. a Google Doc edited in Drive), the baseline is left alone so that edit still syncs.
+ */
+export async function moveDriveFile(fileId: string, folderId: string) {
+  const row = await prisma.resume_files.findUnique({ where: { drive_file_id: fileId }, select: { id: true, drive_version: true } });
+  const before = row ? await google.getFileMeta(fileId) : null;
+  await google.moveFile(fileId, folderId);
+  if (row && before?.version === row.drive_version) {
+    const after = await google.getFileMeta(fileId);
+    await prisma.resume_files.updateMany({ where: { id: row.id, drive_version: row.drive_version }, data: { drive_version: after.version ?? null, updated_at: new Date() } });
+  }
+}
+
 /** The person's resume row, if the portal may change it now (it has an S3 copy and no sync issue). */
 export async function editableResumeRow(candidateId: string) {
   const row = await prisma.resume_files.findUnique({ where: { candidate_id: candidateId } });

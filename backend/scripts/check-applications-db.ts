@@ -1,7 +1,8 @@
 // Run against a local database: DATABASE_URL=postgres://postgres:postgres@localhost:5433/hirely npm run check:applications-db
 // Database-level checks of applications, stage history, rejection reasons, reapply and merge.
 import assert from "node:assert/strict";
-import { addNote, createApplication, driveFolderJob, findDuplicate, keepSeparate, mergeCandidate, moveApplications, saveRejectionReasons, takesDuplicateFile, updateApplication } from "../src/applications.ts";
+import { addNote, bookingApplication, createApplication, driveFolderJob, findDuplicate, keepSeparate, mergeCandidate, moveApplications, saveRejectionReasons, takesDuplicateFile, updateApplication } from "../src/applications.ts";
+import { rebasePath } from "../src/drive.ts";
 import { prisma } from "../src/db.ts";
 import { createCandidate } from "../src/pipeline.ts";
 import { runJob } from "../src/sync-jobs.ts";
@@ -242,6 +243,76 @@ assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: appId }
   await prisma.candidates.delete({ where: { id: p.id } });
   await prisma.jobs.deleteMany({ where: { id: { in: [j1.id, j2.id] } } });
   console.log("P1 ok");
+}
+
+// M3: merging into a person with no stored resume hands them the duplicate's file instead of deleting it
+{
+  const target = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "NoFile" } });
+  await new Promise((r) => setTimeout(r, 5));
+  const resumeJson = { storage: "s3", fileName: "real.pdf", mimeType: "application/pdf", driveFileId: "", sizeKb: 1, uploadedAt: new Date().toISOString(), uploadedById: "", driveUrl: "" };
+  const dup = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "HasFile", resume: resumeJson } });
+  const rf = await prisma.resume_files.create({ data: { candidate_id: dup.id, file_name: "real.pdf", mime_type: "application/pdf", state: "synced", s3_key: `resumes/CHK-${Math.random()}/real.pdf` } });
+  await mergeCandidate(dup.id, target.id, null);
+  const after = await prisma.resume_files.findUniqueOrThrow({ where: { id: rf.id } });
+  assert.equal(after.candidate_id, target.id, "M3: file now belongs to the target");
+  assert.notEqual(after.state, "pending_deletion", "M3: not scheduled for deletion");
+  assert.equal(((await prisma.candidates.findUniqueOrThrow({ where: { id: target.id } })).resume as { fileName?: string } | null)?.fileName, "real.pdf", "M3: target shows the resume");
+  await prisma.resume_files.delete({ where: { id: rf.id } });
+  await prisma.candidates.delete({ where: { id: target.id } });
+  console.log("M3 ok");
+}
+
+// C1: two simultaneous "consider for this job" requests create only one open application
+{
+  const j = await prisma.jobs.create({ data: { title: "CHK Race" } });
+  const p = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "Race" } });
+  const results = await Promise.allSettled([1, 2, 3].map(() => createApplication({ candidateId: p.id, jobId: j.id, actorId: null })));
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1, "C1: exactly one created");
+  assert.equal(await prisma.applications.count({ where: { candidate_id: p.id, job_id: j.id } }), 1, "C1: one row");
+  assert.equal(await prisma.stage_transitions.count({ where: { applications: { candidate_id: p.id } } }), 1, "C1: one history row");
+  await prisma.candidates.delete({ where: { id: p.id } });
+  await prisma.jobs.delete({ where: { id: j.id } });
+  console.log("C1 ok");
+}
+
+// P2/P3: a job change clears the old job's AI match and queues a re-score; an unknown job is a clear 400
+{
+  const [j1, j2] = await Promise.all([prisma.jobs.create({ data: { title: "CHK Score1" } }), prisma.jobs.create({ data: { title: "CHK Score2" } })]);
+  const p = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "Score", parse_status: "ready" } });
+  const a = await createApplication({ candidateId: p.id, jobId: j1.id, actorId: null });
+  await prisma.applications.update({ where: { id: a }, data: { summary: { headline: "great backend fit", matchScore: 85 } } });
+  await updateApplication(a, { jobId: j2.id }, null);
+  assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: a } })).summary, null, "P2: old job's score cleared");
+  assert.equal((await prisma.candidates.findUniqueOrThrow({ where: { id: p.id } })).parse_status, "pending", "P2: re-score queued");
+  await assert.rejects(updateApplication(a, { jobId: "00000000-0000-4000-8000-00000000abcd" }, null), (e: { status?: number; message?: string }) => e.status === 400 && /Unknown job/.test(e.message ?? ""), "P3: 400 Unknown job");
+  await new Promise((r) => setTimeout(r, 300)); // let the queued parse of this resume-less person finish
+  await prisma.candidates.delete({ where: { id: p.id } });
+  await prisma.jobs.deleteMany({ where: { id: { in: [j1.id, j2.id] } } });
+  console.log("P2 ok");
+}
+
+// B3: self-booking uses the open application the person was most recently worked on for (same as manual emails)
+{
+  const [jA, jB] = await Promise.all([prisma.jobs.create({ data: { title: "CHK BookA" } }), prisma.jobs.create({ data: { title: "CHK BookB" } })]);
+  const p = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "Book" } });
+  const a = await createApplication({ candidateId: p.id, jobId: jA.id, actorId: null });
+  await new Promise((r) => setTimeout(r, 5));
+  await createApplication({ candidateId: p.id, jobId: jB.id, actorId: null }); // newer but idle
+  await new Promise((r) => setTimeout(r, 5));
+  await addNote({ candidateId: p.id, applicationId: a, body: "worked on A", actorId: null });
+  assert.equal(await bookingApplication(p.id), a, "B3: most recently worked-on open application");
+  await prisma.candidates.delete({ where: { id: p.id } });
+  await prisma.jobs.deleteMany({ where: { id: { in: [jA.id, jB.id] } } });
+  console.log("B3 ok");
+}
+
+// RB: stored job folder paths follow a root rename, whatever the spacing or characters
+{
+  assert.equal(rebasePath("ATS/Resumes/Eng", "ATS / Resumes", "All 2026/Marketing"), "All 2026/Marketing/Eng", "RB: spaces around slashes");
+  assert.equal(rebasePath("Resumes 🎯/Sales", "Resumes 🎯", "New"), "New/Sales", "RB: emoji");
+  assert.equal(rebasePath("Other/Eng", "ATS/Resumes", "New"), null, "RB: outside the old root");
+  assert.equal(rebasePath("ATS/ResumesX/Eng", "ATS/Resumes", "New"), null, "RB: prefix must end at a segment");
+  console.log("RB ok");
 }
 
 // S1: createCandidate makes the person plus one open application with an entry transition

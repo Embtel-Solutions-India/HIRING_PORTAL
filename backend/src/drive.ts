@@ -13,7 +13,7 @@ import type { ResumeFile } from "../../frontend/src/types.ts";
 import { prisma } from "./db.ts";
 import * as google from "./google.ts";
 import { createCandidate } from "./pipeline.ts";
-import { trackDriveImport } from "./resume-files.ts";
+import { moveDriveFile, trackDriveImport } from "./resume-files.ts";
 import { getSetting, patchSetting } from "./settings.ts";
 import { ensureJobFolder } from "./storage.ts";
 
@@ -34,14 +34,24 @@ const norm = (s: string) => s.trim().toLowerCase();
 export async function moveRootFolder(oldPath: string, oldId: string, newPath: string): Promise<string> {
   const newId = await google.ensureFolderPath(newPath);
   if (newId === oldId) return newId;
-  const parts = (p: string) => p.split("/").map((s) => s.trim()).filter(Boolean);
-  const [from, to] = [parts(oldPath), parts(newPath)];
+  const [from, to] = [pathParts(oldPath), pathParts(newPath)];
   // New root inside the old one (ATS/Resumes → ATS/Resumes/2026): don't move the folder that holds it into itself.
   const holdsNewRoot = to.length > from.length && from.every((s, i) => to[i] === s) ? to[from.length] : undefined;
   await moveContents(oldId, newId, holdsNewRoot);
-  await prisma.$executeRaw`update jobs set drive_folder = ${newPath} || substr(drive_folder, ${oldPath.length + 1})
-    where drive_folder_id is not null and starts_with(drive_folder, ${oldPath + "/"})`;
+  for (const j of await prisma.jobs.findMany({ where: { drive_folder_id: { not: null } }, select: { id: true, drive_folder: true } })) {
+    const moved = rebasePath(j.drive_folder, oldPath, newPath);
+    if (moved) await prisma.jobs.updateMany({ where: { id: j.id }, data: { drive_folder: moved } });
+  }
   return newId;
+}
+
+const pathParts = (p: string) => p.split("/").map((s) => s.trim()).filter(Boolean);
+
+/** "ATS/Resumes/Eng" under old root "ATS / Resumes" → "<new root>/Eng"; null when the path isn't inside the old root. */
+export function rebasePath(stored: string, oldRoot: string, newRoot: string): string | null {
+  const [path, from] = [pathParts(stored), pathParts(oldRoot)];
+  if (path.length <= from.length || !from.every((s, i) => path[i] === s)) return null;
+  return [...pathParts(newRoot), ...path.slice(from.length)].join("/");
 }
 
 async function moveContents(fromId: string, toId: string, skipName?: string) {
@@ -50,7 +60,9 @@ async function moveContents(fromId: string, toId: string, skipName?: string) {
     if (f.name === skipName) continue;
     const target = f.mimeType === google.FOLDER ? existing.get(f.name) : undefined;
     if (!target) {
-      await google.moveFile(f.id, toId);
+      // Folders keep their contents' versions; a loose file's own version changes, so record it.
+      if (f.mimeType === google.FOLDER) await google.moveFile(f.id, toId);
+      else await moveDriveFile(f.id, toId);
       continue;
     }
     await moveContents(f.id, target);

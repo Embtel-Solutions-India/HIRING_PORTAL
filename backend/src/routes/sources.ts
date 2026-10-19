@@ -76,7 +76,7 @@ export default async function sourceRoutes(app: FastifyInstance) {
       data: { source_id: src?.id ?? null },
       select: { id: true, first_name: true, last_name: true },
     });
-    for (const r of rows) await touchCandidate(r.id);
+    await touchCandidate(rows.map((r) => r.id));
     if (rows.length === 1) {
       const c = rows[0]!;
       await logActivity(user.id, "source_changed", src ? `tagged ${c.first_name} ${c.last_name} as ${src.name}` : `cleared the source on ${c.first_name} ${c.last_name}`, c.id);

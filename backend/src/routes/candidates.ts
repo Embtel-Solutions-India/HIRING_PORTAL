@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ResumeFile } from "../../../frontend/src/types.ts";
-import { logActivity, touchCandidate } from "../activity.ts";
+import { fullName, logActivity, touchCandidate } from "../activity.ts";
 import { addNote, createApplication, keepSeparate, mergeCandidate } from "../applications.ts";
 import { prisma } from "../db.ts";
 import { config } from "../config.ts";
@@ -26,7 +26,6 @@ const PatchBody = z
   })
   .partial();
 
-const fullName = (c: { first_name: string; last_name: string }) => `${c.first_name} ${c.last_name}`.trim();
 
 export default async function candidateRoutes(app: FastifyInstance) {
   app.patch("/api/candidates/:id", async (req) => {

@@ -25,7 +25,10 @@ export async function touch(applicationIds: string[], db: Db = prisma) {
   if (applicationIds.length) await db.applications.updateMany({ where: { id: { in: applicationIds } }, data: { last_activity_at: new Date() } });
 }
 
-/** Touches every open (active-stage) application of a person. */
-export async function touchCandidate(candidateId: string, db: Db = prisma) {
-  await db.applications.updateMany({ where: { candidate_id: candidateId, stages: { kind: "active" } }, data: { last_activity_at: new Date() } });
+/** Touches every open (active-stage) application of one or more people. */
+export async function touchCandidate(candidateIds: string | string[], db: Db = prisma) {
+  const ids = typeof candidateIds === "string" ? [candidateIds] : candidateIds;
+  if (ids.length) await db.applications.updateMany({ where: { candidate_id: { in: ids }, stages: { kind: "active" } }, data: { last_activity_at: new Date() } });
 }
+
+export const fullName = (c: { first_name: string; last_name: string }) => `${c.first_name} ${c.last_name}`.trim();

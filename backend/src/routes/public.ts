@@ -1,7 +1,7 @@
 /** No-login endpoints: candidate self-booking and email tracking. */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { newestOpenApplication } from "../applications.ts";
+import { bookingApplication } from "../applications.ts";
 import { config } from "../config.ts";
 import { verifySignature } from "../crypto.ts";
 import { prisma } from "../db.ts";
@@ -108,12 +108,10 @@ export default async function publicRoutes(app: FastifyInstance) {
 
     if (!candidate.email && body.email) await prisma.candidates.updateMany({ where: { id: candidate.id }, data: { email: body.email } });
     // The booking is for the job they're being considered for now.
-    const application =
-      (await newestOpenApplication(candidate.id)) ??
-      (await prisma.applications.findFirst({ where: { candidate_id: candidate.id }, orderBy: { last_activity_at: "desc" }, select: { id: true } }));
-    if (!application) throw new HttpError(404, "We couldn't find your application. Please use the link from the email we sent you.");
+    const applicationId = await bookingApplication(candidate.id);
+    if (!applicationId) throw new HttpError(404, "We couldn't find your application. Please use the link from the email we sent you.");
     const id = await createInterview({
-      applicationId: application.id,
+      applicationId,
       title: link.title,
       type: link.type,
       start,

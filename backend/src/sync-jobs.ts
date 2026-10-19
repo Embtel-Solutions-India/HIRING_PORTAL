@@ -7,7 +7,7 @@ import { Prisma, prisma } from "./db.ts";
 import { flagConflict, pollDriveChanges, portalPending } from "./drive-changes.ts";
 import * as google from "./google.ts";
 import { HttpError } from "./http.ts";
-import { registerDriveFile, renameInS3, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
+import { moveDriveFile, registerDriveFile, renameInS3, syncCandidateResume, type ResumeFileRow } from "./resume-files.ts";
 import * as s3 from "./s3.ts";
 import { driveFolderFor } from "./storage.ts";
 import { claimNext, complete, enqueue, fail, resetRunning, setPayload, type JobRow } from "./sync-queue.ts";
@@ -156,13 +156,7 @@ async function moveDrive(job: JobRow, row: ResumeFileRow) {
   const folder = await folderForRow(row);
   const meta = await google.getFileMeta(row.drive_file_id);
   if ((meta.parents ?? []).includes(folder)) return complete(job.id, prisma, "skipped: already in place");
-  await google.moveFile(row.drive_file_id, folder);
-  // A move bumps the Drive version. Record it so the change feed doesn't take the move for an edit, but only if the
-  // file was unchanged since our last sync; otherwise a Drive edit (Google Docs are detected by version) would be lost.
-  if (meta.version === row.drive_version) {
-    const after = await google.getFileMeta(row.drive_file_id);
-    await prisma.resume_files.updateMany({ where: { id: row.id, drive_version: row.drive_version }, data: { drive_version: after.version ?? null, updated_at: new Date() } });
-  }
+  await moveDriveFile(row.drive_file_id, folder);
   return complete(job.id, prisma);
 }
 

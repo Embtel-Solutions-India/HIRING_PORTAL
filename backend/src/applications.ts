@@ -2,31 +2,47 @@
  * Applications: one person's attempt at one job, with its own stage and an insert-only stage history.
  * An application is "open" while its stage is an active one (hired and closed are finished).
  */
-import { logActivity, touch, touchCandidate } from "./activity.ts";
-import { prisma } from "./db.ts";
+import { fullName, logActivity, touch, touchCandidate } from "./activity.ts";
+import { Prisma, prisma } from "./db.ts";
 import * as google from "./google.ts";
 import { HttpError } from "./http.ts";
+import { enqueueParse } from "./pipeline.ts";
 import { markCandidatesDeleted, replaceResumeFile } from "./resume-files.ts";
 import { readResume } from "./storage.ts";
 import { enqueue, type Db } from "./sync-queue.ts";
 import type { ResumeFile } from "../../frontend/src/types.ts";
 
-const fullName = (c: { first_name: string; last_name: string }) => `${c.first_name} ${c.last_name}`.trim();
+
+/**
+ * Holds a per-(person, job) lock until the transaction ends, then refuses if the person already has an open
+ * application for that job. Serialises double-clicks and concurrent recruiters; the rule spans a join to stages,
+ * so a plain unique index can't express it.
+ */
+async function assertNoOtherOpen(tx: Prisma.TransactionClient, candidateId: string, jobId: string, exceptId?: string) {
+  await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${`${candidateId}:${jobId}`}))`;
+  const open = await tx.applications.findFirst({
+    where: { candidate_id: candidateId, job_id: jobId, stages: { kind: "active" }, ...(exceptId ? { id: { not: exceptId } } : {}) },
+    select: { candidates: { select: { first_name: true, last_name: true } } },
+  });
+  if (open) throw new HttpError(409, `${fullName(open.candidates) || "This candidate"} already has an open application for this job`);
+}
+
+/** Runs `fn` in the caller's transaction, or in a new one when given the plain client. */
+const inTx = <T,>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T>) => (db === prisma ? prisma.$transaction(fn) : fn(db as Prisma.TransactionClient));
 
 /** Starts an application in the first active stage. A person can't have two open applications for the same job. */
 export async function createApplication(input: { candidateId: string; jobId: string | null; actorId: string | null; ownerId?: string | null }, db: Db = prisma): Promise<string> {
-  if (input.jobId) {
-    const open = await db.applications.findFirst({ where: { candidate_id: input.candidateId, job_id: input.jobId, stages: { kind: "active" } }, select: { candidates: { select: { first_name: true, last_name: true } } } });
-    if (open) throw new HttpError(409, `${fullName(open.candidates) || "This candidate"} already has an open application for this job`);
-  }
-  const stage = await db.stages.findFirst({ where: { kind: "active" }, orderBy: { position: "asc" }, select: { id: true } });
-  if (!stage) throw new HttpError(400, "Add an in-progress stage first");
-  const app = await db.applications.create({
-    data: { candidate_id: input.candidateId, job_id: input.jobId, stage_id: stage.id, owner_id: input.ownerId === undefined ? input.actorId : input.ownerId },
-    select: { id: true },
+  return inTx(db, async (tx) => {
+    if (input.jobId) await assertNoOtherOpen(tx, input.candidateId, input.jobId);
+    const stage = await tx.stages.findFirst({ where: { kind: "active" }, orderBy: { position: "asc" }, select: { id: true } });
+    if (!stage) throw new HttpError(400, "Add an in-progress stage first");
+    const app = await tx.applications.create({
+      data: { candidate_id: input.candidateId, job_id: input.jobId, stage_id: stage.id, owner_id: input.ownerId === undefined ? input.actorId : input.ownerId },
+      select: { id: true },
+    });
+    await tx.stage_transitions.create({ data: { application_id: app.id, from_stage_id: null, to_stage_id: stage.id, actor_id: input.actorId } });
+    return app.id;
   });
-  await db.stage_transitions.create({ data: { application_id: app.id, from_stage_id: null, to_stage_id: stage.id, actor_id: input.actorId } });
-  return app.id;
 }
 
 /**
@@ -69,6 +85,13 @@ export async function latestApplicationIds(candidateIds: string[]): Promise<Map<
 export async function newestOpenApplication(candidateId: string): Promise<{ id: string; jobId: string | null } | null> {
   const a = await prisma.applications.findFirst({ where: { candidate_id: candidateId, stages: { kind: "active" } }, orderBy: { created_at: "desc" }, select: { id: true, job_id: true } });
   return a ? { id: a.id, jobId: a.job_id } : null;
+}
+
+/** The application a self-booked interview belongs to: the open one worked on most recently, else the latest at all. */
+export async function bookingApplication(candidateId: string): Promise<string | null> {
+  const open = await prisma.applications.findFirst({ where: { candidate_id: candidateId, stages: { kind: "active" } }, orderBy: { last_activity_at: "desc" }, select: { id: true } });
+  if (open) return open.id;
+  return (await prisma.applications.findFirst({ where: { candidate_id: candidateId }, orderBy: { last_activity_at: "desc" }, select: { id: true } }))?.id ?? null;
 }
 
 /** The job whose Drive folder holds the person's resume: their newest open application, else their newest one of any stage. */
@@ -121,14 +144,20 @@ export async function updateApplication(id: string, patch: { rating?: number; st
   const current = await prisma.applications.findUnique({ where: { id }, select: { candidate_id: true, job_id: true, stages: { select: { kind: true } } } });
   if (!current) throw new HttpError(404, "Application not found");
   const jobChanged = patch.jobId !== undefined && patch.jobId !== current.job_id;
-  // Same rule as creating one: at most one open application per person per job.
-  if (jobChanged && patch.jobId && current.stages.kind === "active") {
-    const clash = await prisma.applications.findFirst({ where: { id: { not: id }, candidate_id: current.candidate_id, job_id: patch.jobId, stages: { kind: "active" } }, select: { candidates: { select: { first_name: true, last_name: true } } } });
-    if (clash) throw new HttpError(409, `${fullName(clash.candidates) || "This candidate"} already has an open application for this job`);
-  }
-  await prisma.applications.updateMany({ where: { id }, data: meaningful ? { ...data, last_activity_at: new Date() } : data });
+  if (jobChanged && patch.jobId && !(await prisma.jobs.findUnique({ where: { id: patch.jobId }, select: { id: true } }))) throw new HttpError(400, "Unknown job");
+  await prisma.$transaction(async (tx) => {
+    // Same rule as creating one: at most one open application per person per job.
+    if (jobChanged && patch.jobId && current.stages.kind === "active") await assertNoOtherOpen(tx, current.candidate_id, patch.jobId, id);
+    // The AI match was scored against the old job; it's re-scored below.
+    const update = { ...data, ...(meaningful ? { last_activity_at: new Date() } : {}), ...(jobChanged ? { summary: Prisma.DbNull } : {}) };
+    await tx.applications.updateMany({ where: { id }, data: update });
+    if (jobChanged) {
+      await tx.interviews.updateMany({ where: { application_id: id }, data: { job_id: patch.jobId ?? null } });
+      await tx.candidates.updateMany({ where: { id: current.candidate_id }, data: { parse_status: "pending" } });
+    }
+  });
   if (jobChanged) {
-    await prisma.interviews.updateMany({ where: { application_id: id }, data: { job_id: patch.jobId ?? null } });
+    enqueueParse(current.candidate_id);
     const rf = await prisma.resume_files.findUnique({ where: { candidate_id: current.candidate_id }, select: { id: true } });
     if (rf && (await google.isConnected())) await enqueue(rf.id, "move_drive");
   }
@@ -181,9 +210,9 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
   ]);
   if (!dup || !target) throw new HttpError(404, "Candidate not found");
 
-  // ponytail: only an S3-backed resume can be swapped in place; otherwise the target keeps its file and the
-  // duplicate's goes into the normal deletion grace period (restorable from Settings → Resume sync).
-  // The same happens when the target's file is the newer one.
+  // ponytail: only an S3-backed resume can be swapped in place. If the target has no S3 copy at all, it takes over the
+  // duplicate's whole file record instead (below). Otherwise the target keeps its file and the duplicate's goes into the
+  // normal deletion grace period (restorable from Settings → Resume sync); the same when the target's file is newer.
   const [dupFile, targetFile] = await Promise.all([
     prisma.resume_files.findUnique({ where: { candidate_id: dupId } }),
     prisma.resume_files.findUnique({ where: { candidate_id: targetId } }),
@@ -193,7 +222,18 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
     await replaceResumeFile(targetId, { fileName: dupFile.file_name, data });
   }
 
+  // The target has nothing usable in S3 but the duplicate does: hand the duplicate's file over rather than delete it.
+  const handOver = !!dupFile?.s3_key && !targetFile?.s3_key;
+
   const moved = await prisma.$transaction(async (tx) => {
+    if (handOver) {
+      // resume_files.candidate_id is unique: park the duplicate's row, give the target's old row (if any) to the
+      // duplicate so it's deleted with it, then attach the duplicate's row to the target.
+      await tx.resume_files.update({ where: { id: dupFile!.id }, data: { candidate_id: null } });
+      if (targetFile) await tx.resume_files.update({ where: { id: targetFile.id }, data: { candidate_id: dupId } });
+      await tx.resume_files.update({ where: { id: dupFile!.id }, data: { candidate_id: targetId, updated_at: new Date() } });
+      await tx.candidates.update({ where: { id: targetId }, data: { resume: dup.resume ?? Prisma.DbNull } });
+    }
     const targetOpen = await tx.applications.findMany({ where: { candidate_id: targetId, job_id: { not: null }, stages: { kind: "active" } }, select: { id: true, job_id: true } });
     const openFor = new Map(targetOpen.map((a) => [a.job_id!, a.id]));
     let moved = 0;
@@ -211,13 +251,16 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
     }
     for (const table of [tx.notes, tx.interviews, tx.activity, tx.email_messages, tx.drive_files] as const)
       await (table as typeof tx.notes).updateMany({ where: { candidate_id: dupId }, data: { candidate_id: targetId } });
-    await tx.candidates.update({ where: { id: targetId }, data: { possible_duplicate_of: null } });
+    // Re-score after the duplicate's applications have arrived, so every open one is scored against the current resume.
+    await tx.candidates.update({ where: { id: targetId }, data: { possible_duplicate_of: null, parse_status: "pending" } });
     await touch((await tx.applications.findMany({ where: { candidate_id: targetId }, select: { id: true } })).map((a) => a.id), tx);
     await markCandidatesDeleted([dupId], tx);
     return moved;
   });
 
-  // A newer application may be for another job: the person's Drive file follows it.
-  if (moved && targetFile && (await google.isConnected())) await enqueue(targetFile.id, "move_drive");
+  enqueueParse(targetId);
+  // A newer application may be for another job (or the file came from the duplicate): the Drive file follows.
+  const fileId = handOver ? dupFile!.id : targetFile?.id;
+  if ((moved || handOver) && fileId && (await google.isConnected())) await enqueue(fileId, "move_drive");
   await logActivity(actorId, "candidate_updated", `merged ${fullName(dup)} into ${fullName(target)}`, targetId);
 }
