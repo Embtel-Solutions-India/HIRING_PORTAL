@@ -75,7 +75,16 @@ try {
   // Awaited, so it has already been logged by the time it returns.
   await sendSystemEmail("new@chk-rt.test", "CHK-RT invite", "hi", admin.email);
   assert.equal(replies.at(-1), admin.email, "R8: invite → inviting admin");
-  log("R1–R8 ok");
+
+  // R9: two applications of one person moved together get one email each, not one collapsed email.
+  const job = await prisma.jobs.create({ data: { title: "CHK-RT Job" } });
+  const second = await createApplication({ candidateId: cand.id, jobId: job.id, actorId: null });
+  const id = await createCampaign({ recipients: [...one, { candidateId: cand.id, applicationId: second }], subject: "CHK-RT e", body: "hi", actorId: recruiter.id });
+  assert.deepEqual((await prisma.email_messages.findMany({ where: { campaign_id: id }, select: { application_id: true } })).map((m) => m.application_id).sort(), [applicationId, second].sort(), "R9: one email per application");
+  await nextReplyTo();
+  await prisma.candidates.deleteMany({ where: { id: cand.id } });
+  await prisma.jobs.delete({ where: { id: job.id } });
+  log("R1–R9 ok");
 } finally {
   await cleanup();
   await prisma.$disconnect();

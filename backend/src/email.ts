@@ -83,15 +83,17 @@ function toHtml(text: string, signature: string, messageId?: string) {
 // ---------- campaigns ----------
 
 /**
- * Creates a campaign with one message per candidate. Sends right away unless scheduled for later.
- * Each recipient's application decides {{job_title}} and {{stage}}.
+ * Creates a campaign with one message per recipient. Sends right away unless scheduled for later.
+ * Each recipient's application decides {{job_title}} and {{stage}}, so two applications of one person get two emails.
  */
 export async function createCampaign(input: { recipients: { candidateId: string; applicationId: string | null }[]; subject: string; body: string; templateId?: string | null; scheduledAt?: string | null; replyTo?: string[]; actorId: string | null }) {
   const org = await getSetting("org");
   const sendAt = input.scheduledAt ? new Date(input.scheduledAt) : new Date();
   const scheduled = sendAt.getTime() > Date.now() + 30_000;
-  const appFor = new Map(input.recipients.map((r) => [r.candidateId, r.applicationId]));
-  const recipients = await prisma.candidates.findMany({ where: { id: { in: [...appFor.keys()] } }, select: { id: true, email: true } });
+  const emailOf = new Map(
+    (await prisma.candidates.findMany({ where: { id: { in: [...new Set(input.recipients.map((r) => r.candidateId))] } }, select: { id: true, email: true } })).map((c) => [c.id, c.email]),
+  );
+  const recipients = [...new Map(input.recipients.filter((r) => emailOf.has(r.candidateId)).map((r) => [`${r.candidateId}|${r.applicationId}`, r])).values()];
   const campaign = await prisma.email_campaigns.create({
     data: {
       subject: input.subject,
@@ -105,10 +107,10 @@ export async function createCampaign(input: { recipients: { candidateId: string;
     select: { id: true },
   });
   for (const r of recipients) {
-    await prisma.email_messages.create({ data: { campaign_id: campaign.id, candidate_id: r.id, application_id: appFor.get(r.id) ?? null, to_address: r.email } });
+    await prisma.email_messages.create({ data: { campaign_id: campaign.id, candidate_id: r.candidateId, application_id: r.applicationId, to_address: emailOf.get(r.candidateId)! } });
   }
   const label = recipients.length === 1 ? "1 candidate" : `${recipients.length} candidates`;
-  await logActivity(input.actorId, "email_sent", `${scheduled ? "scheduled" : "sent"} “${input.subject}” to ${label}`, recipients.length === 1 ? recipients[0]!.id : null);
+  await logActivity(input.actorId, "email_sent", `${scheduled ? "scheduled" : "sent"} “${input.subject}” to ${label}`, new Set(recipients.map((r) => r.candidateId)).size === 1 ? recipients[0]!.candidateId : null);
   // The sender (sent_by_id) is stored and always gets replies. ponytail: extra replyTo isn't stored, so it only
   // reaches campaigns sent right away (interview confirmations are); add a column if scheduled sends ever need it.
   if (!scheduled) void sendCampaign(campaign.id, input.replyTo);

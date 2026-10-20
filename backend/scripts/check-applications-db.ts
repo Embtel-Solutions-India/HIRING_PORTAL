@@ -134,6 +134,11 @@ assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: appId }
   assert.notEqual(first, second, "RA1: reapply after rejection allowed");
   assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: first } })).stage_id, closed, "RA1: old outcome untouched");
   await assert.rejects(createApplication({ candidateId: personId, jobId: j.id, actorId: null }), /already has an open application/, "RA1: open one blocks");
+  await assert.rejects(moveApplications({ ids: [first], stageId: active1, actorId: null }), /already has an open application/, "RA1: reopening the old one blocks too");
+  await moveApplications({ ids: [second], stageId: closed, actorId: null, reasonId: "skills" });
+  await assert.rejects(moveApplications({ ids: [first, second], stageId: active1, actorId: null }), /only have one open application/, "RA1: reopening both at once blocks");
+  await moveApplications({ ids: [first], stageId: active2, actorId: null });
+  assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: first } })).stage_id, active2, "RA1: reopening alone is fine");
   await prisma.applications.deleteMany({ where: { job_id: j.id } });
   await prisma.jobs.delete({ where: { id: j.id } });
   console.log("RA1 ok");
@@ -272,6 +277,21 @@ assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: appId }
   await prisma.resume_files.delete({ where: { id: rf.id } });
   await prisma.candidates.delete({ where: { id: target.id } });
   console.log("M3 ok");
+}
+
+// M4: a Drive-only duplicate resume (no S3 copy yet) still goes to a target with no resume
+{
+  const target = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "NoFile" } });
+  await new Promise((r) => setTimeout(r, 5));
+  const dup = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "DriveOnly" } });
+  const rf = await prisma.resume_files.create({ data: { candidate_id: dup.id, file_name: "drive.pdf", mime_type: "application/pdf", state: "synced", drive_file_id: `CHK-${Math.random()}` } });
+  await mergeCandidate(dup.id, target.id, null);
+  const after = await prisma.resume_files.findUniqueOrThrow({ where: { id: rf.id } });
+  assert.equal(after.candidate_id, target.id, "M4: file now belongs to the target");
+  assert.notEqual(after.state, "pending_deletion", "M4: not scheduled for deletion");
+  await prisma.resume_files.delete({ where: { id: rf.id } });
+  await prisma.candidates.delete({ where: { id: target.id } });
+  console.log("M4 ok");
 }
 
 // C1: two simultaneous "consider for this job" requests create only one open application

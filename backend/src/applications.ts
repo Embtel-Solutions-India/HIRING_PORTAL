@@ -59,9 +59,18 @@ export async function moveApplications(input: { ids: string[]; stageId: string; 
   const moved = await prisma.$transaction(async (tx) => {
     const rows = await tx.applications.findMany({
       where: { id: { in: input.ids }, stage_id: { not: stage.id } },
-      select: { id: true, stage_id: true, candidate_id: true, candidates: { select: { first_name: true, last_name: true } } },
+      select: { id: true, stage_id: true, candidate_id: true, job_id: true, stages: { select: { kind: true } }, candidates: { select: { first_name: true, last_name: true } } },
     });
     if (!rows.length) return rows;
+    // Reopening a finished application (or Undo on a reject) obeys the same one-open-per-job rule as creating one.
+    if (stage.kind === "active") {
+      const reopened = rows.filter((r) => r.job_id && r.stages.kind !== "active").sort((a, b) => `${a.candidate_id}:${a.job_id}`.localeCompare(`${b.candidate_id}:${b.job_id}`));
+      for (const [i, r] of reopened.entries()) {
+        const sameJob = reopened[i - 1];
+        if (sameJob && sameJob.candidate_id === r.candidate_id && sameJob.job_id === r.job_id) throw new HttpError(409, `${fullName(r.candidates) || "This candidate"} can only have one open application for this job`);
+        await assertNoOtherOpen(tx, r.candidate_id, r.job_id!, r.id);
+      }
+    }
     await tx.applications.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { stage_id: stage.id, stage_entered_at: now, last_activity_at: now } });
     await tx.stage_transitions.createMany({
       data: rows.map((r) => ({ application_id: r.id, from_stage_id: r.stage_id, to_stage_id: stage.id, actor_id: input.actorId, reason_id: reason?.id ?? null, reason_label: reason?.label ?? null, note, created_at: now })),
@@ -210,8 +219,8 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
   ]);
   if (!dup || !target) throw new HttpError(404, "Candidate not found");
 
-  // ponytail: only an S3-backed resume can be swapped in place. If the target has no S3 copy at all, it takes over the
-  // duplicate's whole file record instead (below). Otherwise the target keeps its file and the duplicate's goes into the
+  // ponytail: only an S3-backed resume can be swapped in place. If the target has no S3 copy at all, or no file at all,
+  // it takes over the duplicate's whole file record instead (below). Otherwise the target keeps its file and the duplicate's goes into the
   // normal deletion grace period (restorable from Settings → Resume sync); the same when the target's file is newer.
   const [dupFile, targetFile] = await Promise.all([
     prisma.resume_files.findUnique({ where: { candidate_id: dupId } }),
@@ -222,8 +231,9 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
     await replaceResumeFile(targetId, { fileName: dupFile.file_name, data });
   }
 
-  // The target has nothing usable in S3 but the duplicate does: hand the duplicate's file over rather than delete it.
-  const handOver = !!dupFile?.s3_key && !targetFile?.s3_key;
+  // Hand the duplicate's file over rather than delete it when the target has no resume, or nothing usable in S3 but the
+  // duplicate does. A Drive-only duplicate resume still beats no resume.
+  const handOver = !!dupFile && (!targetFile || (!!dupFile.s3_key && !targetFile.s3_key));
 
   const moved = await prisma.$transaction(async (tx) => {
     if (handOver) {

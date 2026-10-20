@@ -134,14 +134,18 @@ export default function Review() {
   };
   const rejectStage = stages.find((s) => s.kind === "closed");
 
+  // A second key press while the move is in flight would see the optimistic stage and move the same card again.
+  const deciding = useRef(false);
   const decide = async (kind: "advance" | "reject") => {
-    if (!current || !canMove) return;
+    if (!current || !canMove || deciding.current) return;
     const target = kind === "advance" ? nextStageFor(current) : rejectStage;
     if (!target || target.id === current.app.stageId) return go(1);
     const from = current.app.stageId;
     const id = current.app.id;
     const name = current.candidate.firstName;
-    if (!(await requestMove([id], target.id, { notify: notify && canEmail }))) return;
+    deciding.current = true;
+    const ok = await requestMove([id], target.id, { notify: notify && canEmail }).finally(() => (deciding.current = false));
+    if (!ok) return;
     setDecisions((d) => ({ ...d, [id]: target.id }));
     toast(`${name} → ${target.name}`, "success", {
       label: "Undo",

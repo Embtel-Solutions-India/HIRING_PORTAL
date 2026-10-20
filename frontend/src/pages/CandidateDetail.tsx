@@ -65,7 +65,7 @@ export default function CandidateDetail() {
       live = false;
     };
   }, [version, id, fetchHistory]);
-  const siblings = useMemo(() => (app ? applications.filter((a) => a.jobId === app.jobId).map((a) => a.candidateId) : []), [applications, app]);
+  const siblings = useMemo(() => (app ? [...new Set(applications.filter((a) => a.jobId === app.jobId).map((a) => a.candidateId))] : []), [applications, app]);
 
   if (!c || !app) {
     return <EmptyState icon={<ArrowLeft size={18} />} title="Candidate not found" action={<Button onClick={() => navigate("/candidates")}>Back to candidates</Button>} />;

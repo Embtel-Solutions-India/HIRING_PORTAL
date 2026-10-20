@@ -35,3 +35,10 @@ export function matchesPool(candidate: Candidate, apps: Application[], stages: R
       (!f.reasonId || a.outcome?.reasonId === f.reasonId),
   );
 }
+
+/** The application to act on for a person (optionally for one job): the open one worked on most recently, else the latest. */
+export function preferredApp(apps: Application[], stages: Record<string, Stage>, jobId?: string): Application | undefined {
+  const pick = (list: Application[]) => list.reduce<Application | undefined>((best, a) => (!best || a.lastActivityAt > best.lastActivityAt ? a : best), undefined);
+  const forJob = jobId ? apps.filter((a) => a.jobId === jobId) : apps;
+  return pick(forJob.filter((a) => stages[a.stageId]?.kind === "active")) ?? pick(forJob);
+}
