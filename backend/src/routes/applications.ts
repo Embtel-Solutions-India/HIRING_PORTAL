@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { can } from "../../../frontend/src/lib/permissions.ts";
 import { moveApplications, updateApplication } from "../applications.ts";
-import { prisma } from "../db.ts";
+import { Prisma, prisma } from "../db.ts";
 import { createCampaign } from "../email.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
 import { enqueueParse } from "../pipeline.ts";
@@ -58,6 +58,8 @@ export default async function applicationRoutes(app: FastifyInstance) {
     const user = requirePerm(req, "candidates.edit");
     const a = await loadApplication((req.params as { id: string }).id);
     await assertCandidateAccess(user, a.candidate_id);
+    // A cleared summary gets re-scored even on a finished application.
+    await prisma.applications.updateMany({ where: { id: a.id }, data: { summary: Prisma.DbNull } });
     await prisma.candidates.updateMany({ where: { id: a.candidate_id }, data: { parse_status: "pending" } });
     enqueueParse(a.candidate_id);
     return { ok: true };

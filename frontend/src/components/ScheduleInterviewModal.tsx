@@ -1,7 +1,8 @@
 import { addDays, addMinutes, format, isSameDay, isWeekend, setHours, setMinutes, startOfDay } from "date-fns";
 import { CalendarCheck, Copy, Link2, MapPin, Phone, Video } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useLatestAppMap, useStore } from "../data/store";
+import { useStageMap, useStore } from "../data/store";
+import { preferredApp } from "../lib/pool";
 import { api } from "../lib/api";
 import type { InterviewType } from "../types";
 import { cn, fullName } from "../lib/utils";
@@ -17,7 +18,8 @@ type Busy = Record<string, { start: string; end: string }[]>;
 
 export function ScheduleInterviewModal({ open, onClose, candidateId, applicationId }: { open: boolean; onClose: () => void; candidateId?: string; applicationId?: string }) {
   const candidates = useStore((s) => s.candidates);
-  const latest = useLatestAppMap();
+  const applications = useStore((s) => s.applications);
+  const stageMap = useStageMap();
   const team = useStore((s) => s.team);
   const bookingLinks = useStore((s) => s.bookingLinks);
   const settings = useStore((s) => s.settings);
@@ -97,7 +99,7 @@ export function ScheduleInterviewModal({ open, onClose, candidateId, application
   const linkUrl = link ? `${window.location.origin}/book/${link.slug}${candidate ? `?c=${candidate.id}` : ""}` : "";
 
   const submit = async () => {
-    const appId = (applicationId && candidate?.id === candidateId ? applicationId : undefined) ?? (candidate && latest[candidate.id]?.id);
+    const appId = (applicationId && candidate?.id === candidateId ? applicationId : undefined) ?? (candidate && preferredApp(applications.filter((a) => a.candidateId === candidate.id), stageMap)?.id);
     if (!candidate || !slot || !appId) return;
     setSaving(true);
     const ok = await schedule(

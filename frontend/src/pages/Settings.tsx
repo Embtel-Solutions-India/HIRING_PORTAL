@@ -298,7 +298,7 @@ function EmailDomain() {
             <input className="field" value={draft.senderAddress} onChange={(e) => setDraft({ ...draft, senderAddress: e.target.value })} placeholder={`careers@${draft.emailDomain || "yourcompany.com"}`} />
           </Field>
         </div>
-        <Field label="Reply-to" hint="Candidate replies land here (e.g. a shared inbox or Google Group)">
+        <Field label="Reply-to" hint="Replies go to whoever sent the email; this inbox is only the fallback when no teammate sent it">
           <input className="field" value={draft.replyTo} onChange={(e) => setDraft({ ...draft, replyTo: e.target.value })} />
         </Field>
         <Field label="Signature">

@@ -25,7 +25,7 @@ export function RejectDialog() {
       if (n >= 1 && n <= 9 && reasons[n - 1]) {
         e.preventDefault();
         setReasonId(reasons[n - 1]!.id);
-      } else if (e.key === "Enter" && reasonId) {
+      } else if (e.key === "Enter" && reasonId && (e.target as HTMLElement).tagName !== "BUTTON") {
         e.preventDefault();
         resolve({ reasonId, note });
       }

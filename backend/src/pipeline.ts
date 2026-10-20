@@ -4,7 +4,7 @@ import type { ResumeFile } from "../../frontend/src/types.ts";
 import { logActivity } from "./activity.ts";
 import { analyzeResume } from "./ai.ts";
 import { createApplication, findDuplicate } from "./applications.ts";
-import { prisma } from "./db.ts";
+import { Prisma, prisma } from "./db.ts";
 import { basicParse, extractResumeText } from "./resume.ts";
 import { getSetting } from "./settings.ts";
 import { readResume } from "./storage.ts";
@@ -68,6 +68,8 @@ export async function resumePendingParses() {
   rows.forEach((r) => enqueueParse(r.id));
 }
 
+const isRetryable = (e: unknown) => e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || e instanceof Anthropic.APIConnectionError;
+
 async function parseCandidate(id: string, attempt = 1): Promise<void> {
   const c = await prisma.candidates.findUnique({ where: { id }, select: { resume: true } });
   const resume = c?.resume as ResumeFile | null | undefined;
@@ -76,14 +78,27 @@ async function parseCandidate(id: string, attempt = 1): Promise<void> {
     const file = await readResume(resume);
     const text = await extractResumeText(file.data, file.mimeType);
     const basic = basicParse(text, resume.fileName);
-    // The match score is per job: score every open application; with none open, the most recent one.
+    // The match score is per job: score every open application plus any without a score (a finished one whose job
+    // changed or that asked to be re-summarized); with none of those, the most recent one.
     const appSelect = { id: true, jobs: { select: { title: true, description: true, department: true } } } as const;
-    const open = await prisma.applications.findMany({ where: { candidate_id: id, stages: { kind: "active" } }, orderBy: { created_at: "desc" }, select: appSelect });
-    const apps = open.length ? open : await prisma.applications.findMany({ where: { candidate_id: id }, orderBy: { last_activity_at: "desc" }, take: 1, select: appSelect });
+    const due = await prisma.applications.findMany({
+      where: { candidate_id: id, OR: [{ stages: { kind: "active" } }, { summary: { equals: Prisma.DbNull } }] },
+      orderBy: { created_at: "desc" },
+      select: appSelect,
+    });
+    const apps = due.length ? due : await prisma.applications.findMany({ where: { candidate_id: id }, orderBy: { last_activity_at: "desc" }, take: 1, select: appSelect });
+    // No application at all: still one call, for the profile.
+    const targets: { id: string | null; jobs: (typeof apps)[number]["jobs"] }[] = apps.length ? apps : [{ id: null, jobs: null }];
     const org = await getSetting("org");
-    // ponytail: one AI call per open application; split profile extraction from scoring if cost matters.
-    const results = org.aiSummariesEnabled ? await Promise.all(apps.map(async (a) => ({ id: a.id, ai: await analyzeResume(text, a.jobs ?? null) }))) : [];
-    const ai = results[0]?.ai ?? null;
+    // ponytail: one AI call per application; split profile extraction from scoring if cost matters.
+    const settled = org.aiSummariesEnabled ? await Promise.allSettled(targets.map((a) => analyzeResume(text, a.jobs ?? null))) : [];
+    const failed = settled.flatMap((s) => (s.status === "rejected" ? [s.reason as unknown] : []));
+    // A transient error retries the whole parse; any other failure only loses that one job's score, unless all failed.
+    const transient = failed.find(isRetryable);
+    if ((transient && attempt < 4) || (failed.length && failed.length === settled.length)) throw transient ?? failed[0];
+    failed.forEach((e) => console.warn(`[parse] candidate ${id}: one match score failed:`, e instanceof Error ? e.message : e));
+    const results = settled.map((s, i) => ({ id: targets[i]!.id, ai: s.status === "fulfilled" ? s.value : null }));
+    const ai = results.find((r) => r.ai)?.ai ?? null;
 
     // Empty email/phone keep whatever is already on file.
     const email = (ai?.email || basic.email) || undefined;
@@ -105,7 +120,7 @@ async function parseCandidate(id: string, attempt = 1): Promise<void> {
         }
       : { first_name: basic.firstName, last_name: basic.lastName, email, phone, resume_text: text, parse_status: "ready" };
     const summaries = results.flatMap(({ id: appId, ai: r }) =>
-      r
+      r && appId
         ? [prisma.applications.updateMany({ where: { id: appId }, data: { summary: { headline: r.headline, overview: r.overview, strengths: r.strengths, concerns: r.concerns, matchScore: r.matchScore, yearsExperience: r.yearsExperience, generatedAt: new Date().toISOString() } } })]
         : [],
     );
@@ -117,8 +132,7 @@ async function parseCandidate(id: string, attempt = 1): Promise<void> {
     // Now that email/phone are known, flag a likely earlier record of the same person for a recruiter to check.
     await prisma.candidates.updateMany({ where: { id }, data: { possible_duplicate_of: await findDuplicate(id) } });
   } catch (e) {
-    const retryable = e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || e instanceof Anthropic.APIConnectionError;
-    if (retryable && attempt < 4) {
+    if (isRetryable(e) && attempt < 4) {
       await new Promise((r) => setTimeout(r, 15_000 * attempt));
       return parseCandidate(id, attempt + 1);
     }

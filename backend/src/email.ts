@@ -18,16 +18,19 @@ interface Outgoing {
   subject: string;
   text: string;
   html: string;
+  /** Who gets the reply: the teammate who sent it, plus anyone else on it (e.g. interviewers). Falls back to the org reply-to. */
+  replyTo?: string[];
 }
 
 async function deliver(msg: Outgoing): Promise<string> {
   const org = await getSetting("org");
   const from = `"${org.senderName.replace(/"/g, "")}" <${org.senderAddress}>`;
+  const replyTo = msg.replyTo?.length ? msg.replyTo : org.replyTo || undefined;
   if (config.email.transport === "log") {
-    console.log(`\n[email:log] From: ${from}\nTo: ${msg.to}\nSubject: ${msg.subject}\n\n${msg.text}\n`);
+    console.log(`\n[email:log] From: ${from}\nTo: ${msg.to}\nReply-To: ${replyTo ?? ""}\nSubject: ${msg.subject}\n\n${msg.text}\n`);
     return `log-${Date.now()}`;
   }
-  const res = await smtpClient().sendMail({ from, to: msg.to, replyTo: org.replyTo || undefined, subject: msg.subject, text: msg.text, html: msg.html });
+  const res = await smtpClient().sendMail({ from, to: msg.to, replyTo, subject: msg.subject, text: msg.text, html: msg.html });
   return res.messageId ?? "";
 }
 
@@ -80,15 +83,17 @@ function toHtml(text: string, signature: string, messageId?: string) {
 // ---------- campaigns ----------
 
 /**
- * Creates a campaign with one message per candidate. Sends right away unless scheduled for later.
- * Each recipient's application decides {{job_title}} and {{stage}}.
+ * Creates a campaign with one message per recipient. Sends right away unless scheduled for later.
+ * Each recipient's application decides {{job_title}} and {{stage}}, so two applications of one person get two emails.
  */
-export async function createCampaign(input: { recipients: { candidateId: string; applicationId: string | null }[]; subject: string; body: string; templateId?: string | null; scheduledAt?: string | null; actorId: string | null }) {
+export async function createCampaign(input: { recipients: { candidateId: string; applicationId: string | null }[]; subject: string; body: string; templateId?: string | null; scheduledAt?: string | null; replyTo?: string[]; actorId: string | null }) {
   const org = await getSetting("org");
   const sendAt = input.scheduledAt ? new Date(input.scheduledAt) : new Date();
   const scheduled = sendAt.getTime() > Date.now() + 30_000;
-  const appFor = new Map(input.recipients.map((r) => [r.candidateId, r.applicationId]));
-  const recipients = await prisma.candidates.findMany({ where: { id: { in: [...appFor.keys()] } }, select: { id: true, email: true } });
+  const emailOf = new Map(
+    (await prisma.candidates.findMany({ where: { id: { in: [...new Set(input.recipients.map((r) => r.candidateId))] } }, select: { id: true, email: true } })).map((c) => [c.id, c.email]),
+  );
+  const recipients = [...new Map(input.recipients.filter((r) => emailOf.has(r.candidateId)).map((r) => [`${r.candidateId}|${r.applicationId}`, r])).values()];
   const campaign = await prisma.email_campaigns.create({
     data: {
       subject: input.subject,
@@ -102,22 +107,25 @@ export async function createCampaign(input: { recipients: { candidateId: string;
     select: { id: true },
   });
   for (const r of recipients) {
-    await prisma.email_messages.create({ data: { campaign_id: campaign.id, candidate_id: r.id, application_id: appFor.get(r.id) ?? null, to_address: r.email } });
+    await prisma.email_messages.create({ data: { campaign_id: campaign.id, candidate_id: r.candidateId, application_id: r.applicationId, to_address: emailOf.get(r.candidateId)! } });
   }
   const label = recipients.length === 1 ? "1 candidate" : `${recipients.length} candidates`;
-  await logActivity(input.actorId, "email_sent", `${scheduled ? "scheduled" : "sent"} “${input.subject}” to ${label}`, recipients.length === 1 ? recipients[0]!.id : null);
-  if (!scheduled) void sendCampaign(campaign.id);
+  await logActivity(input.actorId, "email_sent", `${scheduled ? "scheduled" : "sent"} “${input.subject}” to ${label}`, new Set(recipients.map((r) => r.candidateId)).size === 1 ? recipients[0]!.candidateId : null);
+  // The sender (sent_by_id) is stored and always gets replies. ponytail: extra replyTo isn't stored, so it only
+  // reaches campaigns sent right away (interview confirmations are); add a column if scheduled sends ever need it.
+  if (!scheduled) void sendCampaign(campaign.id, input.replyTo);
   return campaign.id;
 }
 
 const sending = new Set<string>();
 
-export async function sendCampaign(campaignId: string) {
+export async function sendCampaign(campaignId: string, extraReplyTo: string[] = []) {
   if (sending.has(campaignId)) return;
   sending.add(campaignId);
   try {
     await prisma.email_campaigns.updateMany({ where: { id: campaignId }, data: { status: "sending" } });
-    const campaign = await prisma.email_campaigns.findUnique({ where: { id: campaignId }, select: { subject: true, body: true } });
+    const campaign = await prisma.email_campaigns.findUnique({ where: { id: campaignId }, select: { subject: true, body: true, users: { select: { email: true } } } });
+    const replyTo = [...new Set([campaign?.users?.email, ...extraReplyTo].filter((e): e is string => !!e))];
     const org = await getSetting("org");
     const messages = (
       await prisma.email_messages.findMany({
@@ -138,7 +146,7 @@ export async function sendCampaign(campaignId: string) {
         const fields = await mergeFields({ candidateId: m.candidate_id ?? "", firstName: m.first_name ?? "", lastName: m.last_name ?? "", jobTitle: m.job_title ?? "", stage: m.stage ?? "" });
         const subject = render(campaign!.subject, fields);
         const text = render(campaign!.body, fields);
-        const providerId = await deliver({ to: m.to_address, subject, text: `${text}\n\n${org.emailSignature}`, html: toHtml(text, org.emailSignature, m.id) });
+        const providerId = await deliver({ to: m.to_address, subject, text: `${text}\n\n${org.emailSignature}`, html: toHtml(text, org.emailSignature, m.id), replyTo });
         await prisma.email_messages.updateMany({ where: { id: m.id }, data: { status: "sent", subject, provider_id: providerId, sent_at: new Date() } });
       } catch (e) {
         failures++;
@@ -158,7 +166,7 @@ export async function sendDueCampaigns() {
 }
 
 /** Transactional email to a teammate (invites, test emails). Not tracked. */
-export async function sendSystemEmail(to: string, subject: string, text: string) {
+export async function sendSystemEmail(to: string, subject: string, text: string, replyTo: string) {
   const org = await getSetting("org");
-  return deliver({ to, subject, text: `${text}\n\n${org.emailSignature}`, html: toHtml(text, org.emailSignature) });
+  return deliver({ to, subject, text: `${text}\n\n${org.emailSignature}`, html: toHtml(text, org.emailSignature), replyTo: [replyTo] });
 }

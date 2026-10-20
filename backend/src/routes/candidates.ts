@@ -7,7 +7,7 @@ import { prisma } from "../db.ts";
 import { config } from "../config.ts";
 import * as google from "../google.ts";
 import { assertCandidateAccess, HttpError, isUuid, requirePerm } from "../http.ts";
-import { createCandidate } from "../pipeline.ts";
+import { createCandidate, enqueueParse } from "../pipeline.ts";
 import { editableResumeRow, markCandidatesDeleted, renameInS3, replaceResumeFile } from "../resume-files.ts";
 import { docxToHtml } from "../resume.ts";
 import * as s3 from "../s3.ts";
@@ -98,11 +98,16 @@ export default async function candidateRoutes(app: FastifyInstance) {
     await assertCandidateAccess(user, id);
     const { jobId } = z.object({ jobId: z.string().uuid() }).parse(req.body);
     const [c, job] = await Promise.all([
-      prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true } }),
+      prisma.candidates.findUnique({ where: { id }, select: { first_name: true, last_name: true, resume: true } }),
       prisma.jobs.findUnique({ where: { id: jobId }, select: { title: true } }),
     ]);
     if (!job) throw new HttpError(400, "Unknown job");
     const appId = await createApplication({ candidateId: id, jobId, actorId: user.id });
+    // The match score is per job, so the new application needs its own.
+    if (c?.resume) {
+      await prisma.candidates.updateMany({ where: { id }, data: { parse_status: "pending" } });
+      enqueueParse(id);
+    }
     await logActivity(user.id, "stage_change", `considered ${fullName(c!)} for ${job.title}`, id);
     const rf = await prisma.resume_files.findUnique({ where: { candidate_id: id }, select: { id: true } });
     if (rf && (await google.isConnected())) await enqueue(rf.id, "move_drive");

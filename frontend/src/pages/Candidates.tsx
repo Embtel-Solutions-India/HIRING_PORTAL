@@ -9,10 +9,10 @@ import { UploadResumeModal } from "../components/UploadResumeModal";
 import { Avatar, Button, Checkbox, DriveMark, EmptyState, MatchScore, PageHeader, Select, StageBadge, Stars } from "../components/ui";
 import { useCan, useJobMap, useLatestAppMap, useSourceMap, useStageMap, useStore, useTeamMap } from "../data/store";
 import type { Application, Candidate as Person } from "../types";
-import { matchesPool, type PoolFilter } from "../lib/pool";
+import { matchesPool, preferredApp, type PoolFilter } from "../lib/pool";
 import { cn, daysSince, fmtDate, fullName, resumeKeptNote } from "../lib/utils";
 
-/** One row per person, showing the application they were most recently worked on for (id = the person). */
+/** One row per person, showing the application they were most recently worked on for, or their one for the filtered job (id = the person). */
 type Candidate = Application & Person & { applicationId: string };
 
 type SortKey = "name" | "match" | "applied" | "inStage" | "rating";
@@ -20,11 +20,6 @@ type SortKey = "name" | "match" | "applied" | "inStage" | "rating";
 export default function Candidates() {
   const people = useStore((s) => s.candidates);
   const latest = useLatestAppMap();
-  const candidates = useMemo<Candidate[]>(
-    () => people.flatMap((c) => (latest[c.id] ? [{ ...latest[c.id]!, ...c, applicationId: latest[c.id]!.id }] : [])),
-    [people, latest],
-  );
-  const appIdOf = (candidateId: string) => latest[candidateId]?.id ?? "";
   const applications = useStore((s) => s.applications);
   const rejectionReasons = useStore((s) => s.rejectionReasons);
   const appsBy = useMemo(() => {
@@ -52,6 +47,16 @@ export default function Candidates() {
 
   const [q, setQ] = useState("");
   const [jobId, setJobId] = useState("all");
+  // With a job picked, each row (its stage, owner, star, and what bulk actions move) is the person's application for that job.
+  const candidates = useMemo<Candidate[]>(
+    () =>
+      people.flatMap((c) => {
+        const a = jobId === "all" ? latest[c.id] : preferredApp(appsBy.get(c.id) ?? [], stageMap, jobId);
+        return a ? [{ ...a, ...c, applicationId: a.id }] : [];
+      }),
+    [people, latest, jobId, appsBy, stageMap],
+  );
+  const appIdOf = (candidateId: string) => candidates.find((c) => c.id === candidateId)?.applicationId ?? "";
   const [stageId, setStageId] = useState("all");
   const [params, setParams] = useSearchParams();
   // "all", a source id, or "none" (not tagged yet). Linked from the dashboard as ?source=…
