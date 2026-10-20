@@ -56,7 +56,7 @@ export default async function bootstrapRoutes(app: FastifyInstance) {
       canEmail ? prisma.email_templates.findMany({ orderBy: { name: "asc" } }) : Promise.resolve([]),
       canEmail
         ? prisma.$queryRaw<Row[]>`select c.*,
-               array_agg(m.candidate_id) as recipient_ids,
+               array_agg(distinct m.candidate_id) as recipient_ids,
                count(*) filter (where m.status = 'sent')::int as delivered,
                count(m.opened_at)::int as opened,
                count(m.clicked_at)::int as clicked,

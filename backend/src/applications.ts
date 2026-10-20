@@ -19,13 +19,15 @@ import type { ResumeFile } from "../../frontend/src/types.ts";
  * so a plain unique index can't express it.
  */
 async function assertNoOtherOpen(tx: Prisma.TransactionClient, candidateId: string, jobId: string, exceptId?: string) {
-  await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${`${candidateId}:${jobId}`}))`;
+  await lockPersonJob(tx, candidateId, jobId);
   const open = await tx.applications.findFirst({
     where: { candidate_id: candidateId, job_id: jobId, stages: { kind: "active" }, ...(exceptId ? { id: { not: exceptId } } : {}) },
     select: { candidates: { select: { first_name: true, last_name: true } } },
   });
   if (open) throw new HttpError(409, `${fullName(open.candidates) || "This candidate"} already has an open application for this job`);
 }
+
+const lockPersonJob = (tx: Prisma.TransactionClient, candidateId: string, jobId: string) => tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${`${candidateId}:${jobId}`}))`;
 
 /** Runs `fn` in the caller's transaction, or in a new one when given the plain client. */
 const inTx = <T,>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T>) => (db === prisma ? prisma.$transaction(fn) : fn(db as Prisma.TransactionClient));
@@ -244,6 +246,9 @@ export async function mergeCandidate(dupId: string, targetId: string, actorId: s
       await tx.resume_files.update({ where: { id: dupFile!.id }, data: { candidate_id: targetId, updated_at: new Date() } });
       await tx.candidates.update({ where: { id: targetId }, data: { resume: dup.resume ?? Prisma.DbNull } });
     }
+    // Same lock as creating an application, so a concurrent "consider for this job" can't slip in next to a fold.
+    const dupJobs = await tx.applications.findMany({ where: { candidate_id: dupId, job_id: { not: null }, stages: { kind: "active" } }, distinct: ["job_id"], select: { job_id: true } });
+    for (const j of dupJobs.map((a) => a.job_id!).sort()) await lockPersonJob(tx, targetId, j);
     const targetOpen = await tx.applications.findMany({ where: { candidate_id: targetId, job_id: { not: null }, stages: { kind: "active" } }, select: { id: true, job_id: true } });
     const openFor = new Map(targetOpen.map((a) => [a.job_id!, a.id]));
     let moved = 0;

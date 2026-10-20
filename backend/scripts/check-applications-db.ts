@@ -294,6 +294,20 @@ assert.equal((await prisma.applications.findUniqueOrThrow({ where: { id: appId }
   console.log("M4 ok");
 }
 
+// C2: a merge racing "consider for this job" on the target still leaves one open application for that job
+for (let round = 0; round < 5; round++) {
+  const j = await prisma.jobs.create({ data: { title: "CHK Race2" } });
+  const target = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "T" } });
+  await new Promise((r) => setTimeout(r, 5));
+  const dup = await prisma.candidates.create({ data: { first_name: "CHK", last_name: "D" } });
+  await createApplication({ candidateId: dup.id, jobId: j.id, actorId: null });
+  await Promise.allSettled([mergeCandidate(dup.id, target.id, null), createApplication({ candidateId: target.id, jobId: j.id, actorId: null })]);
+  assert.ok((await prisma.applications.count({ where: { candidate_id: target.id, job_id: j.id, stages: { kind: "active" } } })) <= 1, "C2: at most one open application");
+  await prisma.candidates.deleteMany({ where: { id: { in: [target.id, dup.id] } } });
+  await prisma.jobs.delete({ where: { id: j.id } });
+}
+console.log("C2 ok");
+
 // C1: two simultaneous "consider for this job" requests create only one open application
 {
   const j = await prisma.jobs.create({ data: { title: "CHK Race" } });
