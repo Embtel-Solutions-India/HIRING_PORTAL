@@ -35,6 +35,8 @@ export async function createInterview(input: NewInterview) {
   const g = await getSetting("google");
   const end = new Date(input.start.getTime() + input.durationMin * 60_000);
   const name = `${c.first_name} ${c.last_name}`.trim();
+  // Candidate replies go only to the people on this interview: the scheduling recruiter and the interviewers.
+  const replyTo = [...new Set([...(actor ? [actor.email] : []), ...interviewers.map((i) => i.email)].filter(Boolean))];
 
   let calendarEventId: string | null = null;
   let meetLink: string | null = null;
@@ -43,7 +45,7 @@ export async function createInterview(input: NewInterview) {
   if (await google.isConnected()) {
     // The event description is visible to every guest, so the internal profile link is only added when the candidate isn't invited.
     const description = inviteCandidate
-      ? `${input.title} for the ${c.job_title ?? ""} role at ${org.orgName}.\n\nQuestions? Reply to ${org.replyTo || org.senderAddress}.`
+      ? `${input.title} for the ${c.job_title ?? ""} role at ${org.orgName}.\n\nQuestions? Reply to ${replyTo.join(", ") || org.replyTo || org.senderAddress}.`
       : `${input.title} with ${name}${c.job_title ? ` (${c.job_title})` : ""}.\n\nCandidate profile: ${config.appUrl}/candidates/${c.id}`;
     const event = await google.createEvent({
       summary: `${input.title}: ${name}${c.job_title ? ` · ${c.job_title}` : ""}`,
@@ -98,6 +100,7 @@ export async function createInterview(input: NewInterview) {
       recipients: [{ candidateId: c.id, applicationId: app.id }],
       subject: `Interview confirmed: ${input.title}`,
       body: `Hi {{first_name}},\n\nYour ${input.title.toLowerCase()} for {{job_title}} is confirmed for ${when}${location ? ` at ${location}` : ""}.${meetLink ? `\n\nJoin on Google Meet: ${meetLink}` : ""}\n\nSee you then,\n{{sender_name}}`,
+      replyTo,
       actorId: input.actorId,
     });
   }

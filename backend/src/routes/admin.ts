@@ -129,7 +129,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     await logActivity(actor.id, "user_invited", `invited ${body.email} as ${ROLE_LABEL[body.role]}`);
     // The invite is saved either way; report a failed email so the admin can fix settings and use "Resend invite".
     try {
-      await sendInvite(body.email, body.name, actor.name, body.role);
+      await sendInvite(body.email, body.name, actor, body.role);
     } catch (e) {
       console.warn("[invite] email failed:", e);
       return { ok: true, emailError: e instanceof Error ? e.message : String(e) };
@@ -137,12 +137,13 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  async function sendInvite(email: string, name: string, inviter: string, role: Role) {
+  async function sendInvite(email: string, name: string, inviter: UserRow, role: Role) {
     const org = await getSetting("org");
     await sendSystemEmail(
       email,
-      `${inviter} invited you to ${org.orgName}'s hiring workspace`,
-      `Hi ${name.split(" ")[0]},\n\n${inviter} added you to ${org.orgName}'s hiring workspace as ${ROLE_LABEL[role]}.\n\nSign in with your Google account (${email}):\n${config.appUrl}/login`,
+      `${inviter.name} invited you to ${org.orgName}'s hiring workspace`,
+      `Hi ${name.split(" ")[0]},\n\n${inviter.name} added you to ${org.orgName}'s hiring workspace as ${ROLE_LABEL[role]}.\n\nSign in with your Google account (${email}):\n${config.appUrl}/login`,
+      inviter.email,
     );
   }
 
@@ -152,7 +153,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const u = isUuid(id) ? ((await prisma.users.findUnique({ where: { id } })) as UserRow | null) : null;
     if (!u || u.status !== "invited") throw new HttpError(404, "No pending invite");
     if (!canManageRole(actor.role, u.role)) throw new HttpError(403, "Not allowed");
-    await sendInvite(u.email, u.name, actor.name, u.role);
+    await sendInvite(u.email, u.name, actor, u.role);
     return { ok: true };
   });
 
@@ -357,7 +358,7 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.post("/api/settings/email/test", async (req) => {
     const user = requirePerm(req, "settings.email");
-    await sendSystemEmail(user.email, "Test email from your hiring workspace", `Hi ${user.name.split(" ")[0]},\n\nIf you're reading this, candidate emails are set up correctly.`);
+    await sendSystemEmail(user.email, "Test email from your hiring workspace", `Hi ${user.name.split(" ")[0]},\n\nIf you're reading this, candidate emails are set up correctly.`, user.email);
     return { ok: true, transport: config.email.transport };
   });
 }
