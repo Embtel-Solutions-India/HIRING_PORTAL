@@ -16,7 +16,8 @@
     "postinstall": "prisma generate",
     "check:sync-db": "node scripts/check-sync-db.ts",
     "check:applications-db": "node scripts/check-applications-db.ts",
-    "check:pool": "node scripts/check-pool.ts"
+    "check:pool": "node scripts/check-pool.ts",
+    "check:reply-to": "node --env-file-if-exists=.env scripts/check-reply-to.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
